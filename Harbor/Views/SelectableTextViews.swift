@@ -33,8 +33,8 @@ struct SelectableParagraphView: UIViewRepresentable {
         tv.textContainerInset = .zero
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
-        // 非连续布局：长段滚动进屏时少做全量排版
-        tv.layoutManager.allowsNonContiguousLayout = true
+        // 连续布局：与外层 ScrollView + sizeThatFits 配合，避免滚动后叠字
+        tv.layoutManager.allowsNonContiguousLayout = false
         tv.dataDetectorTypes = []
         tv.delegate = context.coordinator
         // 降低与外层 ScrollView 的手势冲突与额外绘制

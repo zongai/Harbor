@@ -32,12 +32,11 @@ struct ArticleContentView: View {
     }
 
     var body: some View {
-        // Editorial paragraph rhythm — air between blocks without feeling sparse
-        LazyVStack(alignment: .leading, spacing: prefersChineseTypography ? AppSpacing.paragraph + 2 : AppSpacing.md - 2) {
-            // 用下标遍历，避免每次 body 都 Array(enumerated()) 分配
+        // VStack：UITextView 在 LazyVStack 回收时易错位叠字
+        VStack(alignment: .leading, spacing: prefersChineseTypography ? AppSpacing.paragraph + 2 : AppSpacing.md - 2) {
             ForEach(cachedBlocks.indices, id: \.self) { index in
                 blockView(cachedBlocks[index])
-                    .id(index)
+                    .id("blk-\(index)-\(cachedParseKey.prefix(12))")
             }
         }
         // 父级 toolbar/chrome 动画不要带动正文布局动画

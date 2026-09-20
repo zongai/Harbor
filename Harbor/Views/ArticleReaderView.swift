@@ -278,6 +278,8 @@ struct ArticleReaderView: View {
             // 整页内容随文章 id 重建，避免沿用上一篇的 contentOffset
             .id(activeID)
         }
+        // 工具栏显隐动画不要传到滚动内容，否则标题/段落会短暂叠字
+        .transaction { $0.animation = nil }
         .background(theme.background)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             // 禁止在此闭包写 AppStore，否则会在布局阶段触发观察更新导致闪退
@@ -340,6 +342,7 @@ struct ArticleReaderView: View {
         // 隐藏导航栏时仍在状态栏区域盖一层主题底色；chrome 可见时显示细阅读进度
         .overlay(alignment: .top) {
             VStack(spacing: 0) {
+                // 导航栏隐藏时盖住状态栏区域，避免正文「透」到时间上
                 if !showChrome {
                     theme.background
                         .frame(height: 0)
@@ -365,8 +368,9 @@ struct ArticleReaderView: View {
                     .animation(AppMotion.optional(AppMotion.progress, reduceMotion: reduceMotion), value: displayProgress)
                 }
             }
+            // 仅遮罩/进度参与 chrome 动画
+            .animation(AppMotion.optional(AppMotion.chrome, reduceMotion: reduceMotion), value: showChrome)
         }
-        .animation(AppMotion.optional(AppMotion.chrome, reduceMotion: reduceMotion), value: showChrome)
         // 换篇：明显水平滑动；表格横向滚动时 suppressArticleSwipe 为 true 则忽略
         .simultaneousGesture(
             DragGesture(minimumDistance: 80)
