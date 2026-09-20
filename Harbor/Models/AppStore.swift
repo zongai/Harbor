@@ -489,14 +489,14 @@ class AppStore: AIService.Runtime {
         return feeds[i].articles[j]
     }
 
-    /// 正文/译文超过此长度则仅保留磁盘，内存中清空以降低常驻 RSS
-    private static let heavyBodyThreshold = 1_200
+    /// 超过此长度的正文/译文不进列表内存，只按 link 存 Offline cache
+    private static let heavyBodyThreshold = 400
 
-    /// 按需从 OfflineCache 补齐正文与译文（阅读/翻译用）
+    /// 按需从 OfflineCache 按 **规范化 link** 水合正文与译文（阅读/翻译唯一读路径）
     func hydratedArticle(_ article: Article) -> Article {
         var a = article
         if a.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let html = OfflineCache.loadArticleHTML(link: a.link), !html.isEmpty {
+           let html = OfflineCache.loadArticleBody(link: a.link), !html.isEmpty {
             a.content = html
             a.hasFullContent = true
         }
@@ -507,18 +507,29 @@ class AppStore: AIService.Runtime {
         return a
     }
 
-    /// 大正文落盘后从内存剥离（元数据仍在 feeds 中）
+    /// 列表侧只保留元数据：正文/大译文写入 cache 后从内存清空（读写统一走 Offline cache）
     private func evacuateHeavyBodies(in article: inout Article) {
         let content = article.content
-        if content.count >= Self.heavyBodyThreshold {
-            OfflineCache.saveArticleHTML(link: article.link, html: content)
+        if !content.isEmpty, content.count >= Self.heavyBodyThreshold {
+            OfflineCache.persistArticleBody(link: article.link, html: content)
             article.hasFullContent = true
+            article.content = ""
+        } else if article.hasFullContent, !content.isEmpty {
+            // 已标全文但偏短：仍落盘，保证读路径一致
+            OfflineCache.persistArticleBody(link: article.link, html: content)
             article.content = ""
         }
         if let translated = article.translatedContent, translated.count >= Self.heavyBodyThreshold {
             OfflineCache.saveTranslatedHTML(link: article.link, html: translated)
             article.translatedContent = nil
         }
+    }
+
+    /// 刷新合并后的文章：不把 RSS/全文 content 留在列表内存
+    private func metadataOnly(_ article: Article) -> Article {
+        var a = article
+        evacuateHeavyBodies(in: &a)
+        return a
     }
 
     private func evacuateAllHeavyBodiesInMemory() {
@@ -1177,7 +1188,7 @@ class AppStore: AIService.Runtime {
             }
         }
         do {
-            // 网络 + 解析在 Task.detached 中完成，回到主线程只做状态合并
+            // 网络 + 解析在 FeedRefreshService.nonisolated 完成；此处仅 MainActor 合并
             let payload = try await FeedRefreshService.fetchAndParse(
                 url: url,
                 feedID: feedID,
@@ -1367,10 +1378,13 @@ class AppStore: AIService.Runtime {
             }
             if readArticleLinks.contains(key) { article.isRead = true }
             if favoriteArticleLinks.contains(key) { article.isFavorite = true }
-            // 仅标记有缓存，不把全文读入内存
-            if OfflineCache.hasArticleHTML(link: article.link) {
+            // 仅标记有缓存，不把全文读入列表内存
+            if OfflineCache.hasArticleBody(link: article.link) {
                 article.hasFullContent = true
                 article.content = ""
+            } else if !article.content.isEmpty {
+                // RSS 自带长 content → 落盘后列表只留元数据
+                article = metadataOnly(article)
             }
             newArticles.append(article)
         }
@@ -1382,6 +1396,7 @@ class AppStore: AIService.Runtime {
                 if !key.isEmpty { readArticleLinks.insert(key) }
             }
         }
+        newArticles = newArticles.map { metadataOnly($0) }
         feeds[idx].articles.insert(contentsOf: newArticles, at: 0)
         feeds[idx].unreadCount = feeds[idx].articles.filter { !$0.isRead }.count
         feeds[idx].lastFetched = Date()
@@ -2969,31 +2984,40 @@ class AppStore: AIService.Runtime {
         guard isFullContentEnabled(for: article) else {
             throw TranslationError.apiError("该订阅源已关闭全文获取")
         }
-        if article.hasFullContent, !article.content.isEmpty,
-           HTMLUtils.stripTags(article.content).count >= 400 {
-            OfflineCache.saveArticleHTML(link: article.link, html: article.content)
-            return article
-        }
-        if let cached = OfflineCache.loadArticleHTML(link: article.link), !cached.isEmpty,
+        // 读：统一按 link → offline cache
+        if let cached = OfflineCache.loadArticleBody(link: article.link), !cached.isEmpty,
            HTMLUtils.stripTags(cached).count >= 400 {
             var updated = article
             updated.content = cached
             updated.hasFullContent = true
-            updateArticle(updated)
+            // 列表侧不持正文
+            var stored = updated
+            stored.content = ""
+            stored.hasFullContent = true
+            updateArticle(stored)
+            return updated
+        }
+        if article.hasFullContent, !article.content.isEmpty,
+           HTMLUtils.stripTags(article.content).count >= 400 {
+            OfflineCache.persistArticleBody(link: article.link, html: article.content)
+            var updated = article
+            var stored = article
+            stored.content = ""
+            updateArticle(stored)
             return updated
         }
         let fetchURL = fullContentFetchURL(for: article)
         let result = try await ArticleContentFetcher.fetchFullContent(from: fetchURL)
-        var updated = article
-        updated.content = result.contentHTML
-        updated.hasFullContent = true
-        // 始终用原始链接做缓存键，避免前缀变化导致缓存失效/重复
-        OfflineCache.saveArticleHTML(link: article.link, html: result.contentHTML)
-        var stored = updated
-        evacuateHeavyBodies(in: &stored)
+        // 写：统一按原始 article.link（不用前缀 URL）
+        OfflineCache.persistArticleBody(link: article.link, html: result.contentHTML)
+        var stored = article
+        stored.hasFullContent = true
+        stored.content = ""
         updateArticle(stored)
-        // 返回给阅读页的仍是含水合正文的副本
-        return updated
+        var forReader = article
+        forReader.content = result.contentHTML
+        forReader.hasFullContent = true
+        return forReader
     }
 
     func clearOfflineContentCache() { OfflineCache.clearContentCache() }

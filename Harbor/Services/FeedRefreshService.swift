@@ -54,7 +54,7 @@ enum FeedRefreshService {
         }
     }
 
-    static func fetchFeedData(from url: URL) async throws -> Data {
+    nonisolated static func fetchFeedData(from url: URL) async throws -> Data {
         if RSSHubSupport.isRSSHubURL(url) {
             let (data, _) = try await FeedDiscovery.fetchRSSHubFeed(from: url)
             return data
@@ -81,8 +81,8 @@ enum FeedRefreshService {
     }
 
 
-    /// 网络拉取 + XML 解析（在后台执行，避免占用 MainActor）
-    struct ParsedFeedPayload: @unchecked Sendable {
+    /// 网络拉取 + XML 解析结果（值类型，跨隔离域安全传递）
+    struct ParsedFeedPayload: Sendable {
         let data: Data
         let articles: [Article]
         /// 实际成功的请求 URL（可能从 http 升到 https）
@@ -91,48 +91,56 @@ enum FeedRefreshService {
         let upgradedToHTTPS: Bool
     }
 
-    /// 拉取 Feed 并解析为 Article 列表；磁盘缓存 XML 也在后台写入
-    static func fetchAndParse(
+    /// 拉取 + 解析在 **nonisolated** 上下文执行（不占 MainActor）。
+    /// 调用方（AppStore @MainActor）在 `await` 返回后只做 `applyParsedFeed` 合并。
+    /// 入参均为值拷贝（URL/UUID/String/Data），出参 Article 为 Sendable 值类型。
+    nonisolated static func fetchAndParse(
         url: URL,
         feedID: UUID,
         feedTitle: String,
         cacheKeyURLString: String
     ) async throws -> ParsedFeedPayload {
-        try await Task.detached(priority: .userInitiated) {
-            var requestURL = url
-            var upgraded = false
-            let data: Data
-            do {
-                data = try await FeedRefreshService.fetchFeedData(from: requestURL)
-            } catch let firstError {
-                guard requestURL.scheme?.lowercased() == "http",
-                      var comps = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else {
-                    throw firstError
-                }
-                comps.scheme = "https"
-                guard let httpsURL = comps.url, NetworkURLPolicy.isAllowed(httpsURL) else {
-                    throw firstError
-                }
-                data = try await FeedRefreshService.fetchFeedData(from: httpsURL)
-                requestURL = httpsURL
-                upgraded = true
+        // 显式值拷贝，避免意外共享引用
+        let requestSeed = url
+        let id = feedID
+        let title = feedTitle
+        let cacheKey = cacheKeyURLString
+
+        var requestURL = requestSeed
+        var upgraded = false
+        let data: Data
+        do {
+            data = try await fetchFeedData(from: requestURL)
+        } catch let firstError {
+            guard requestURL.scheme?.lowercased() == "http",
+                  var comps = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else {
+                throw firstError
             }
-            OfflineCache.saveFeedXML(url: cacheKeyURLString, data: data)
-            let articles = FeedParser.parse(data: data, feedID: feedID, feedTitle: feedTitle)
-            return ParsedFeedPayload(
-                data: data,
-                articles: articles,
-                resolvedURL: requestURL,
-                upgradedToHTTPS: upgraded
-            )
-        }.value
+            comps.scheme = "https"
+            guard let httpsURL = comps.url, NetworkURLPolicy.isAllowed(httpsURL) else {
+                throw firstError
+            }
+            data = try await fetchFeedData(from: httpsURL)
+            requestURL = httpsURL
+            upgraded = true
+        }
+        // 磁盘写与解析均在非主线程隔离外完成
+        OfflineCache.saveFeedXML(url: cacheKey, data: data)
+        let articles = FeedParser.parse(data: data, feedID: id, feedTitle: title)
+        return ParsedFeedPayload(
+            data: data,
+            articles: articles,
+            resolvedURL: requestURL,
+            upgradedToHTTPS: upgraded
+        )
     }
 
-    /// 仅解析（用于离线缓存 XML）
-    static func parseOffline(data: Data, feedID: UUID, feedTitle: String) async -> [Article] {
-        await Task.detached(priority: .userInitiated) {
-            FeedParser.parse(data: data, feedID: feedID, feedTitle: feedTitle)
-        }.value
+    /// 仅解析离线 XML（nonisolated）；返回值拷贝回主线程再 merge
+    nonisolated static func parseOffline(data: Data, feedID: UUID, feedTitle: String) async -> [Article] {
+        let payload = data
+        let id = feedID
+        let title = feedTitle
+        return FeedParser.parse(data: payload, feedID: id, feedTitle: title)
     }
 }
 

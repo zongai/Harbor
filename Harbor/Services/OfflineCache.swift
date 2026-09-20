@@ -49,9 +49,25 @@ enum OfflineCache {
         return u
     }
 
-    /// 稳定缓存键：djb2 + 长度，避免路径注入与过长 URL
+    /// 与 AppStore.canonicalLink 对齐：读写正文必须用同一规范化 link
+    static func normalizeLink(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasSuffix("/") { s = String(s.dropLast()) }
+        if let url = URL(string: s), var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            comps.fragment = nil
+            if let host = comps.host { comps.host = host.lowercased() }
+            if let scheme = comps.scheme { comps.scheme = scheme.lowercased() }
+            if let rebuilt = comps.url?.absoluteString {
+                s = rebuilt
+                if s.hasSuffix("/") { s = String(s.dropLast()) }
+            }
+        }
+        return s
+    }
+
+    /// 稳定缓存键：规范化 URL → djb2 + 长度
     private static func key(for raw: String) -> String {
-        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let s = normalizeLink(raw).lowercased()
         var hash: UInt64 = 5381
         for b in s.utf8 {
             hash = ((hash << 5) &+ hash) &+ UInt64(b)
@@ -153,19 +169,30 @@ enum OfflineCache {
 
     // MARK: - Article full HTML
 
+    /// 统一写路径：正文只按规范化 link 落盘（列表内存不持正文）
     static func saveArticleHTML(link: String, html: String) {
-        guard !link.isEmpty, !html.isEmpty else { return }
-        let file = articlesDir.appendingPathComponent(key(for: link) + ".html")
+        persistArticleBody(link: link, html: html)
+    }
+
+    static func persistArticleBody(link: String, html: String) {
+        let norm = normalizeLink(link)
+        guard !norm.isEmpty, !html.isEmpty else { return }
+        let file = articlesDir.appendingPathComponent(key(for: norm) + ".html")
         try? html.data(using: .utf8)?.write(to: file, options: [.atomic])
-        // 元数据：写入时间，便于清理
-        let meta = articlesDir.appendingPathComponent(key(for: link) + ".meta")
+        let meta = articlesDir.appendingPathComponent(key(for: norm) + ".meta")
         let ts = "\(Date().timeIntervalSince1970)"
         try? ts.data(using: .utf8)?.write(to: meta, options: [.atomic])
     }
 
+    /// 统一读路径：阅读页按 link 从磁盘水合
     static func loadArticleHTML(link: String) -> String? {
-        guard !link.isEmpty else { return nil }
-        let file = articlesDir.appendingPathComponent(key(for: link) + ".html")
+        loadArticleBody(link: link)
+    }
+
+    static func loadArticleBody(link: String) -> String? {
+        let norm = normalizeLink(link)
+        guard !norm.isEmpty else { return nil }
+        let file = articlesDir.appendingPathComponent(key(for: norm) + ".html")
         guard let data = try? Data(contentsOf: file),
               let html = String(data: data, encoding: .utf8),
               !html.isEmpty else { return nil }
@@ -173,18 +200,25 @@ enum OfflineCache {
     }
 
     static func hasArticleHTML(link: String) -> Bool {
-        guard !link.isEmpty else { return false }
-        let file = articlesDir.appendingPathComponent(key(for: link) + ".html")
+        hasArticleBody(link: link)
+    }
+
+    static func hasArticleBody(link: String) -> Bool {
+        let norm = normalizeLink(link)
+        guard !norm.isEmpty else { return false }
+        let file = articlesDir.appendingPathComponent(key(for: norm) + ".html")
         return FileManager.default.fileExists(atPath: file.path)
     }
 
     static func saveTranslatedHTML(link: String, html: String) {
+        let link = normalizeLink(link)
         guard !link.isEmpty, !html.isEmpty else { return }
         let file = articlesDir.appendingPathComponent(key(for: link) + ".translated.html")
         try? html.data(using: .utf8)?.write(to: file, options: [.atomic])
     }
 
     static func loadTranslatedHTML(link: String) -> String? {
+        let link = normalizeLink(link)
         guard !link.isEmpty else { return nil }
         let file = articlesDir.appendingPathComponent(key(for: link) + ".translated.html")
         guard let data = try? Data(contentsOf: file),

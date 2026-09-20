@@ -157,14 +157,14 @@ struct RSSFeed: Identifiable, Codable, Hashable {
     static func == (lhs: RSSFeed, rhs: RSSFeed) -> Bool { lhs.id == rhs.id }
 }
 
-struct TextHighlight: Identifiable, Codable, Hashable {
+struct TextHighlight: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var text: String
     var note: String = ""
     var createdAt: Date = Date()
 }
 
-struct Article: Identifiable, Codable, Hashable {
+struct Article: Identifiable, Codable, Hashable, Sendable {
     var id = UUID()
     var feedID: UUID
     var feedTitle: String
