@@ -90,7 +90,7 @@
 - 全文抓取 RequestDeduper 去重
 - 观察面：已读/收藏不再整源替换（articleFlagsEpoch）
 
-## [1.3-82] — 构建中（ui-redesign-experiment）
+## [1.3-82] — 构建成功 (build167 / Actions 35493905811) · 分支 ui-redesign-experiment
 
 相对：`v1.3-81` / build164
 
