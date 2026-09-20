@@ -104,6 +104,16 @@
 ### Fixed
 - 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
+## [1.3-85] — 构建中 · 分支 ui-redesign-experiment
+
+相对：`v1.3-84` / build169
+
+### 全文抓取
+- 修复自动获取被跳过：水合 RSS 摘要缓存时不再误标 `hasFullContent`
+- 未真正抓成功过全文时始终自动尝试（长摘要不再冒充全文）
+- 静默自动抓取在未确认全文时强制走网络
+- hartpunkt.de 不再优先 WP REST（401），直接 HTML 提取
+
 ## [1.3-84] — 构建成功 (build169 / Actions 35517021723) · 分支 ui-redesign-experiment
 
 相对：`v1.3-83` / build168
