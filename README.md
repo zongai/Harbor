@@ -23,7 +23,7 @@
 - 刷新**线性进度条**（无系统转圈叠层）；失败时标明源名；HTTP 源允许 ATS 并尝试升级 HTTPS
 
 ### 阅读
-- **全文抓取**：摘要过短时自动或手动抓取；源可关闭；站点优化含 Foreign Affairs / Foreign Policy / 少数派 / Sixth Tone / CarNewsChina / **SCMP** 等；遇 **Cloudflare 验证**提示浏览器打开
+- **全文抓取**：摘要过短时自动或手动抓取；**已有全文可再次点击重新获取**；源可关闭；站点优化含 Foreign Affairs / Foreign Policy / 少数派 / Sixth Tone / SpaceNews / NYT 中文网 / CarNewsChina / **SCMP** 等；遇 **Cloudflare 验证**提示浏览器打开
 - **全文 URL 前缀**（设置全局开关 + 前缀，源级启用）：抓取时在文章链接前拼接（如 archive.is / 12ft.io）；缓存仍按原始链接
 - **排版**：系统 / 苹方 / 宋体 / 黑体；中西文分排版；首行缩进；清理空段落与广告块；原文压缩留白；链接内图片正确还原（避免 `__IMG_n__` 字面量）
 - **工具栏显隐**：向下滑动隐藏顶部导航与底部 Tab；上滑恢复

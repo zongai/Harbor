@@ -104,6 +104,28 @@
 ### Fixed
 - 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
+## [1.3-84] — 构建中 · 分支 ui-redesign-experiment
+
+相对：`v1.3-83` / build168
+
+### 设置 / 备份
+- 去掉「高级 / 精简」开关，设置项始终全部可见
+- 设置导出 **v4**：全文 URL 前缀、源级开关与分组、翻译链、字体/语言、兴趣过滤与模型路由等完整偏好
+- 主题配色精修（Forest / Sepia 深色下保持色相）
+
+### 列表
+- 取消首条 Featured 突出样式，统一 `ArticleRow`
+
+### 全文抓取
+- 误标 `hasFullContent` 阻断正文：恢复与重抓逻辑
+- **hartpunkt.de** / **SpaceNews** / **NYT 中文网** 正文提取与清洗
+- SpaceNews 优先 WordPress REST；段落级拼装
+- 再次点击「获取全文」可 **强制重新抓取**（跳过本地缓存）
+
+### 图片
+- **Sixth Tone**：`illustrationWrap` 按 `data-index` 插入 `textImageList` 配图
+- 配图请求带站点 Referer；扩展懒加载字段；expreview 容器选择器
+
 ## [1.3-83] — 构建成功 (build168 / Actions 35495833175) · 分支 ui-redesign-experiment
 
 相对：`v1.3-82` / build167
