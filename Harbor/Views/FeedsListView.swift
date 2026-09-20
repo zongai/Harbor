@@ -23,15 +23,6 @@ struct FeedsListView: View {
 
     private static let allowedImportExtensions: Set<String> = ["opml", "xml", "rss", "atom", "txt"]
 
-    private var refreshProgressLabel: String {
-        let cur = store.refreshProgressCurrent
-        let tot = store.refreshProgressTotal
-        let name = store.refreshProgressTitle
-        if tot <= 0 { return "正在刷新…" }
-        if name.isEmpty { return "正在刷新 \(cur)/\(tot)" }
-        return "正在刷新 \(cur)/\(tot) · \(name)"
-    }
-
     var body: some View {
         NavigationStack {
             List {
@@ -239,50 +230,13 @@ struct FeedsListView: View {
             }
             // 立即结束系统下拉刷新（避免顶部转圈与下方进度条叠两层），实际进度只走 safeAreaInset 线性条
             .refreshable {
-                guard !store.isRefreshingAll else { return }
+                guard !store.chrome.isRefreshingAll else { return }
                 Task { await store.refreshAll() }
             }
             .safeAreaInset(edge: .top) {
-                if store.isRefreshingAll || (store.isLoading && store.refreshProgressTotal > 0) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ProgressView(
-                            value: Double(store.refreshProgressCurrent),
-                            total: Double(max(1, store.refreshProgressTotal))
-                        )
-                        .progressViewStyle(.linear)
-                        .tint(theme.accent)
-                        .animation(.easeInOut(duration: 0.32), value: store.refreshProgressCurrent)
-                        .animation(.easeInOut(duration: 0.32), value: store.refreshProgressTotal)
-
-                        HStack(spacing: 10) {
-                            Text(refreshProgressLabel)
-                                .font(AppTypography.caption())
-                                .foregroundStyle(theme.muted)
-                                .lineLimit(1)
-                                .contentTransition(.numericText())
-                                .animation(.easeInOut(duration: 0.25), value: store.refreshProgressCurrent)
-                                .animation(.easeInOut(duration: 0.25), value: store.refreshProgressTitle)
-                            Spacer(minLength: 8)
-                            if store.isRefreshingAll {
-                                Button("取消") {
-                                    store.cancelRefreshAll()
-                                }
-                                .font(AppTypography.caption().weight(.semibold))
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, AppLayout.listHorizontalPadding)
-                    .padding(.vertical, AppSpacing.sm)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.ultraThinMaterial)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
+                // 独立子视图：只观察 chrome，刷新进度不拖着整页列表 body 重算
+                FeedRefreshProgressBar()
             }
-            // 仅动画进度条显隐，不带动列表分区折叠/展开
-            .animation(.easeInOut(duration: 0.35), value: store.isRefreshingAll)
-            .animation(.easeInOut(duration: 0.35), value: store.isLoading)
             .safeAreaInset(edge: .bottom) {
                 if let msg = store.errorMessage, !msg.isEmpty {
                     Button {
@@ -716,6 +670,63 @@ struct GroupManagerView: View {
         }
     }
 }
+
+/// 仅依赖 SessionChromeState，与订阅列表分观察
+private struct FeedRefreshProgressBar: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.theme) private var theme
+
+    private var chrome: SessionChromeState { store.chrome }
+
+    private var label: String {
+        let cur = chrome.refreshProgressCurrent
+        let tot = chrome.refreshProgressTotal
+        let name = chrome.refreshProgressTitle
+        if tot <= 0 { return name.isEmpty ? "刷新中…" : name }
+        if !name.isEmpty { return "\(cur)/\(tot)  ·  \(name)" }
+        return "\(cur)/\(tot)"
+    }
+
+    var body: some View {
+        if chrome.isRefreshingAll || (chrome.isLoading && chrome.refreshProgressTotal > 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                ProgressView(
+                    value: Double(chrome.refreshProgressCurrent),
+                    total: Double(max(1, chrome.refreshProgressTotal))
+                )
+                .progressViewStyle(.linear)
+                .tint(theme.accent)
+                .animation(.easeInOut(duration: 0.32), value: chrome.refreshProgressCurrent)
+                .animation(.easeInOut(duration: 0.32), value: chrome.refreshProgressTotal)
+
+                HStack(spacing: 10) {
+                    Text(label)
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
+                        .animation(.easeInOut(duration: 0.25), value: chrome.refreshProgressCurrent)
+                        .animation(.easeInOut(duration: 0.25), value: chrome.refreshProgressTitle)
+                    Spacer(minLength: 8)
+                    if chrome.isRefreshingAll {
+                        Button("取消") { store.cancelRefreshAll() }
+                            .font(AppTypography.caption().weight(.semibold))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                }
+            }
+            .padding(.horizontal, AppLayout.listHorizontalPadding)
+            .padding(.vertical, AppSpacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.easeInOut(duration: 0.35), value: chrome.isRefreshingAll)
+            .animation(.easeInOut(duration: 0.35), value: chrome.isLoading)
+        }
+    }
+}
+
 
 struct FeedRow: View {
     @Environment(AppStore.self) private var store

@@ -4,31 +4,53 @@ import SwiftUI
 @Observable
 @MainActor
 class AppStore: AIService.Runtime {
+    // MARK: - 订阅数据域（与 SessionChrome 分观察）
     var feeds: [RSSFeed] = []
     var groups: [FeedGroup] = []
     var collapsedGroupIDs: Set<UUID> = []
     var isUngroupedCollapsed: Bool = false
     var selectedFeedID: UUID?
-    var isLoading = false
-    var isRefreshingAll = false
-    /// 翻译引擎链与限流（与 UI 状态分离）
-    let translationCoordinator = TranslationCoordinator()
-    var refreshProgressCurrent = 0
-    var refreshProgressTotal = 0
-    var refreshProgressTitle = ""
-    /// 刷新会话号：递增即取消进行中的 refreshAll
-    private var refreshSessionID = 0
-    /// 已读/收藏等引起的 feeds 全量落盘防抖任务（与立即写入的 read links 分离）
-    private var pendingFeedsPersistTask: Task<Void, Never>?
-    /// 防抖间隔：连续滑动已读时合并为一次 JSON 编码
-    private static let feedsPersistDelayNs: UInt64 = 1_200_000_000
-
-    /// 文章已读/收藏等标志变更序号。列表可依赖此值做精准刷新，避免整源替换带来的宽观察。
+    /// 文章已读/收藏等标志变更序号
     private(set) var articleFlagsEpoch: UInt64 = 0
 
+    /// 会话 UI 进度域（独立 @Observable）
+    let chrome = SessionChromeState()
 
-    var listTranslationProgressText = ""
-    private(set) var listTranslationSessionID = 0
+    /// 翻译引擎链与限流（与 UI 状态分离）
+    let translationCoordinator = TranslationCoordinator()
+    /// 刷新会话号：递增即取消进行中的 refreshAll
+    private var refreshSessionID = 0
+    /// 已读/收藏等引起的 feeds 全量落盘防抖任务
+    private var pendingFeedsPersistTask: Task<Void, Never>?
+    private static let feedsPersistDelayNs: UInt64 = 1_200_000_000
+
+    // 兼容访问 → chrome（Observation 追踪 chrome 内属性）
+    var isLoading: Bool {
+        get { chrome.isLoading }
+        set { chrome.isLoading = newValue }
+    }
+    var isRefreshingAll: Bool {
+        get { chrome.isRefreshingAll }
+        set { chrome.isRefreshingAll = newValue }
+    }
+    var refreshProgressCurrent: Int {
+        get { chrome.refreshProgressCurrent }
+        set { chrome.refreshProgressCurrent = newValue }
+    }
+    var refreshProgressTotal: Int {
+        get { chrome.refreshProgressTotal }
+        set { chrome.refreshProgressTotal = newValue }
+    }
+    var refreshProgressTitle: String {
+        get { chrome.refreshProgressTitle }
+        set { chrome.refreshProgressTitle = newValue }
+    }
+    var listTranslationProgressText: String {
+        get { chrome.listTranslationProgressText }
+        set { chrome.listTranslationProgressText = newValue }
+    }
+    var listTranslationSessionID: Int { chrome.listTranslationSessionID }
+
     var errorMessage: String?
 
     var fontSize: Double = 17
@@ -1181,14 +1203,12 @@ class AppStore: AIService.Runtime {
     }
 
     func cancelListTranslation() {
-        listTranslationSessionID += 1
-        listTranslationProgressText = ""
+        chrome.cancelListTranslation()
     }
 
     @discardableResult
     func beginListTranslationSession() -> Int {
-        listTranslationSessionID += 1
-        return listTranslationSessionID
+        chrome.beginListTranslationSession()
     }
 
     func isListTranslationSessionActive(_ session: Int) -> Bool {
