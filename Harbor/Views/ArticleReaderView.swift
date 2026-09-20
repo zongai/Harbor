@@ -487,12 +487,13 @@ struct ArticleReaderView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if fullContentAllowed {
+                        let hasSubstantialBody = HTMLUtils.stripTags(currentArticle.content).count >= 400
                         Button {
                             Task { await fetchFullContent() }
                         } label: {
                             Label(
-                                currentArticle.hasFullContent ? "已获取全文" : "获取全文",
-                                systemImage: currentArticle.hasFullContent ? "arrow.down.doc" : "arrow.down.doc.fill"
+                                hasSubstantialBody ? "已获取全文" : "获取全文",
+                                systemImage: hasSubstantialBody ? "arrow.down.doc" : "arrow.down.doc.fill"
                             )
                         }
                         .disabled(isFetchingFull)
@@ -707,7 +708,9 @@ struct ArticleReaderView: View {
             if !silent { fullContentError = "该订阅源已关闭全文获取" }
             return
         }
-        if currentArticle.hasFullContent && !silent {
+        // 仅当水合后正文已足够长时才跳过；hasFullContent 但正文空白说明缓存丢失，必须重抓
+        let existingPlain = HTMLUtils.stripTags(currentArticle.content)
+        if existingPlain.count >= 400 && !silent {
             fullContentHint = "已是全文内容"
             return
         }
@@ -718,7 +721,8 @@ struct ArticleReaderView: View {
             let updated = try await store.fetchFullContent(for: currentArticle)
             showTranslated = false
             translatedContent = nil
-            fullContentHint = silent ? nil : "已获取全文（约 \(HTMLUtils.stripTags(updated.content).count) 字）"
+            let n = HTMLUtils.stripTags(updated.content).count
+            fullContentHint = silent ? nil : "已获取全文（约 \(n) 字）"
             // 全文完成后再自动翻译（抓取过程中不翻译）
             isFetchingFull = false
             await autoTranslateBodyIfNeeded()

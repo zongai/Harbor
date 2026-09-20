@@ -97,7 +97,8 @@ enum OfflineCache {
         }
     }
 
-    /// 将正文落到 article HTML 缓存，feeds 内只保留元数据与短字段
+    /// 将正文落到 article HTML 缓存，feeds 内只保留元数据与短字段。
+    /// 仅落盘，**不**改写 `hasFullContent`（该标志只表示已成功抓取全文）。
     private static func feedsForMetadataPersistence(_ feeds: [RSSFeed]) -> [RSSFeed] {
         var copy = feeds
         for i in copy.indices {
@@ -105,7 +106,6 @@ enum OfflineCache {
                 var a = copy[i].articles[j]
                 if a.content.count >= heavyBodyThreshold {
                     saveArticleHTML(link: a.link, html: a.content)
-                    a.hasFullContent = true
                     a.content = ""
                 }
                 if let translated = a.translatedContent, translated.count >= heavyBodyThreshold {

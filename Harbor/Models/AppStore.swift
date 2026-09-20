@@ -548,15 +548,15 @@ class AppStore: AIService.Runtime {
         return a
     }
 
-    /// 列表侧只保留元数据：正文/大译文写入 cache 后从内存清空（读写统一走 Offline cache）
+    /// 列表侧只保留元数据：正文/大译文写入 cache 后从内存清空（读写统一走 Offline cache）。
+    /// **不得**在仅因长度落盘时把 `hasFullContent` 标为 true——否则会阻断真实全文抓取，且缓存未命中时正文永久空白。
     private func evacuateHeavyBodies(in article: inout Article) {
         let content = article.content
         if !content.isEmpty, content.count >= Self.heavyBodyThreshold {
             OfflineCache.persistArticleBody(link: article.link, html: content)
-            article.hasFullContent = true
             article.content = ""
         } else if article.hasFullContent, !content.isEmpty {
-            // 已标全文但偏短：仍落盘，保证读路径一致
+            // 已确认全文：落盘后清内存，读路径走 cache
             OfflineCache.persistArticleBody(link: article.link, html: content)
             article.content = ""
         }
@@ -578,6 +578,26 @@ class AppStore: AIService.Runtime {
             for j in feeds[i].articles.indices {
                 evacuateHeavyBodies(in: &feeds[i].articles[j])
             }
+        }
+    }
+
+    /// 纠正误标：`hasFullContent` 但内存与磁盘都无正文 → 清标志，允许重新抓取
+    private func recoverOrphanFullContentFlags() {
+        var changed = false
+        for i in feeds.indices {
+            for j in feeds[i].articles.indices {
+                let a = feeds[i].articles[j]
+                guard a.hasFullContent else { continue }
+                let mem = a.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !mem.isEmpty { continue }
+                if OfflineCache.hasArticleBody(link: a.link) { continue }
+                feeds[i].articles[j].hasFullContent = false
+                changed = true
+            }
+        }
+        if changed {
+            articleFlagsEpoch &+= 1
+            scheduleFeedsPersist()
         }
     }
 
@@ -3500,8 +3520,9 @@ class AppStore: AIService.Runtime {
         if let loaded = OfflineCache.loadChatConversations() {
             chatConversations = loaded.sorted { $0.updatedAt > $1.updatedAt }
         }
-        // 启动后剥离已落盘的大正文，降低常驻内存
+        // 启动后剥离已落盘的大正文，降低常驻内存；并纠正无缓存的误标全文
         evacuateAllHeavyBodiesInMemory()
+        recoverOrphanFullContentFlags()
     }
 
     // MARK: - iCloud 同步
