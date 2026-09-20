@@ -3,6 +3,7 @@ import SwiftUI
 
 @Observable
 @MainActor
+@dynamicMemberLookup
 class AppStore: AIService.Runtime {
     // MARK: - 订阅数据域（与 SessionChrome 分观察）
     var feeds: [RSSFeed] = []
@@ -15,6 +16,32 @@ class AppStore: AIService.Runtime {
 
     /// 会话 UI 进度域（独立 @Observable）
     let chrome = SessionChromeState()
+
+    /// 用户偏好 / 引擎配置域（独立 @Observable）
+    let settings = SettingsStore()
+
+    subscript<T>(dynamicMember keyPath: WritableKeyPath<SettingsStore, T>) -> T {
+        get { settings[keyPath: keyPath] }
+        set { settings[keyPath: keyPath] = newValue }
+    }
+
+    // AIService.Runtime 协议见证（不可仅靠 dynamicMemberLookup）
+    var aiOutputLanguage: AppLanguage {
+        get { settings.aiOutputLanguage }
+        set { settings.aiOutputLanguage = newValue }
+    }
+    var defaultSummaryProviderID: UUID? {
+        get { settings.defaultSummaryProviderID }
+        set { settings.defaultSummaryProviderID = newValue }
+    }
+    var defaultExplainProviderID: UUID? {
+        get { settings.defaultExplainProviderID }
+        set { settings.defaultExplainProviderID = newValue }
+    }
+    var modelRoutingShortLimit: Int {
+        get { settings.modelRoutingShortLimit }
+        set { settings.modelRoutingShortLimit = newValue }
+    }
 
     /// 翻译引擎链与限流（与 UI 状态分离）
     let translationCoordinator = TranslationCoordinator()
@@ -53,85 +80,8 @@ class AppStore: AIService.Runtime {
 
     var errorMessage: String?
 
-    var fontSize: Double = 17
-    var listTitleFontSize: Double = 18
-    var listSummaryFontSize: Double = 15
-    var readerTitleFontSize: Double = 24
-    var aiSummaryFontSize: Double = 22
-    var feedTitleFontSize: Double = 17
-    var groupTitleFontSize: Double = 13
-
-    var titleDisplayMode: TitleDisplayMode = .original
-    var defaultTranslationEngine: TranslationEngine = .google
-    /// 翻译时按此顺序尝试引擎；遇限流/不可用自动切下一个
-    var translationEngineChain: [TranslationEngine] = TranslationEngine.allCases
-    /// 引擎级限流冷却（引擎 rawValue → 冷却截止时间）
-    var aiProviders: [AIProvider] = [
-        AIProvider(id: UUID(), name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", kind: "openai"),
-        AIProvider(id: UUID(), name: "Anthropic", baseURL: "https://api.anthropic.com/v1", model: "claude-3-haiku-20240307", kind: "openai"),
-        AIProvider(id: UUID(), name: "Gemini", baseURL: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.0-flash", kind: "gemini")
-    ]
-    var defaultSummaryProviderID: UUID?
-    var defaultTranslationProviderID: UUID?
-    var defaultExplainProviderID: UUID?
-    var aiBlacklistTerms: [String] = []
-    /// 文章黑名单：标题/摘要命中则自动标为已读（与 AI 黑名单独立）
-    var articleBlacklistTerms: [String] = []
-    var aiBlacklistFallbackProviderID: UUID?
-    var showReadArticles: Bool = false
-    var translationPrompt: String = AppStore.defaultTranslationPrompt
-    var summaryPrompt: String = AppStore.defaultSummaryPrompt
-    var explainPrompt: String = AppStore.defaultExplainPrompt
-    var readRetentionDays: Int = 7
-    var fullContentCacheDays: Int = 30
-    /// 全文抓取时是否启用 URL 前缀（仅对勾选了「使用前缀」的源生效）
-    var fullContentURLPrefixEnabled: Bool = false
-    /// 全文抓取 URL 前缀，例如 https://archive.is/ 或 https://12ft.io/
-    var fullContentURLPrefix: String = ""
-    /// 全局摘要 Prompt 预设 ID（源级可覆盖）
-    var globalSummaryPresetID: String = SummaryPromptPreset.standardID
-    /// 摘要 Prompt 预设列表（内置 + 自定义）
-    var summaryPromptPresets: [SummaryPromptPreset] = SummaryPromptPreset.builtInDefaults
-    /// 智能兴趣过滤
-    var smartInterestFilterEnabled: Bool = false
-    /// 低分文章自动标已读（否则仅沉底）
-    var autoMarkLowInterestRead: Bool = false
-    /// 低于此分数视为低兴趣（0～1）
-    var lowInterestThreshold: Double = 0.35
-    /// 列表按兴趣分排序（高分优先）
-    var sortByInterestScore: Bool = false
-    /// 费用路由：短文本用 economyModel
-    var modelRoutingEnabled: Bool = false
-    /// 短文本阈值（字符数，strip 后）
-    var modelRoutingShortLimit: Int = 800
-    /// 兴趣词权重（本地画像）
-    var interestWeights: [String: Double] = [:]
-    /// Edge TTS 音色；空则按正文语言自动选择
-    var ttsVoice: String = ""
-    /// TTS 语速倍数，1.0 为正常（0.5～2.0）
-    var ttsRate: Double = 1.2
-    /// 阅读主题色板
-    var colorTheme: ReadingTheme = .classicLight
-    /// 外观：跟随系统 / 浅色 / 深色
-    var appearanceMode: AppearanceMode = .system
-    /// 界面与阅读字体
-    var appFontFamily: AppFontFamily = .system
-    /// 订阅源排序方式（默认未读优先自动排序）
-    var feedSortMode: FeedSortMode = .unreadThenTitle
-    /// 翻译目标语言
-    var targetLanguage: AppLanguage = .zhHans
-    /// 翻译并发度：0=自动（按引擎），1～8 为固定并发；AI 多 Provider 时还会跨 Provider 分片
-    var translationConcurrency: Int = 0
-    /// AI 摘要/解释等输出语言
-    var aiOutputLanguage: AppLanguage = .zhHans
-    /// Azure Translator 区域（eastasia / eastus / global 等）
-    var microsoftTranslateRegion: String = "global"
-    /// 自定义 Lingva 实例根地址（可选）
-    var lingvaCustomBase: String = ""
-    /// AI 对话历史（本地持久化）
+    /// AI 对话历史（本地持久化）— 会话数据，非偏好配置
     var chatConversations: [ChatConversation] = []
-    /// 新建对话默认使用的 Provider
-    var defaultChatProviderID: UUID?
     /// 当前打开的对话
     var activeChatID: UUID?
 

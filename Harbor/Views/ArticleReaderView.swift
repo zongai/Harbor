@@ -11,6 +11,7 @@ struct ArticleReaderView: View {
     /// 收藏页进入：左右滑在收藏列表内换篇
     var browseFavorites: Bool = false
 
+    // 阅读会话本地状态：翻译/摘要/进度不写入 AppStore，避免牵动列表观察面
     @State private var isTranslating = false
     @State private var isGeneratingSummary = false
     @State private var isFetchingFull = false

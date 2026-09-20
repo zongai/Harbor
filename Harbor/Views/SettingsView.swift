@@ -26,6 +26,7 @@ struct SettingsView: View {
     @State private var dataIOMessage: String?
 
     var body: some View {
+        @Bindable var settings = store.settings
         @Bindable var store = store
         NavigationStack {
             Form {
@@ -60,7 +61,7 @@ struct SettingsView: View {
 
                 // MARK: 阅读
                 Section {
-                    Picker("标题显示", selection: $store.titleDisplayMode) {
+                    Picker("标题显示", selection: $settings.titleDisplayMode) {
                         ForEach(TitleDisplayMode.allCases, id: \.self) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
@@ -113,7 +114,7 @@ struct SettingsView: View {
                     }
                     NavigationLink {
                         Form {
-                            ThemePalettePicker(selection: $store.colorTheme)
+                            ThemePalettePicker(selection: $settings.colorTheme)
                                 .onChange(of: store.colorTheme) { _, _ in store.persistSettings() }
                         }
                         .navigationTitle("阅读主题")
@@ -127,14 +128,14 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Picker("深色模式", selection: $store.appearanceMode) {
+                    Picker("深色模式", selection: $settings.appearanceMode) {
                         ForEach(AppearanceMode.allCases) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
                     .onChange(of: store.appearanceMode) { _, _ in store.persistSettings() }
 
-                    Picker("朗读音色", selection: $store.ttsVoice) {
+                    Picker("朗读音色", selection: $settings.ttsVoice) {
                         Text("自动（按语言）").tag("")
                         ForEach(EdgeTTS.popularVoices, id: \.id) { v in
                             Text(v.name).tag(v.id)
@@ -148,7 +149,7 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $store.ttsRate, in: 0.5...2.0, step: 0.05)
+                    Slider(value: $settings.ttsRate, in: 0.5...2.0, step: 0.05)
                         .onChange(of: store.ttsRate) { _, _ in store.persistSettings() }
                 } header: {
                     Text("阅读")
@@ -158,8 +159,8 @@ struct SettingsView: View {
 
                 // MARK: 订阅
                 Section {
-                    Toggle("显示已读文章", isOn: $store.showReadArticles)
-                    Picker("默认排序", selection: $store.feedSortMode) {
+                    Toggle("显示已读文章", isOn: $settings.showReadArticles)
+                    Picker("默认排序", selection: $settings.feedSortMode) {
                         ForEach(FeedSortMode.allCases) { mode in
                             Text(mode.displayName).tag(mode)
                         }
@@ -255,7 +256,7 @@ struct SettingsView: View {
 
                 if showAdvancedSettings {
                     Section {
-                        Stepper(value: $store.readRetentionDays, in: 0...365) {
+                        Stepper(value: $settings.readRetentionDays, in: 0...365) {
                             if store.readRetentionDays == 0 {
                                 Text("已读保留：关闭自动清理")
                             } else {
@@ -266,7 +267,7 @@ struct SettingsView: View {
                             store.persistSettings()
                             store.purgeOldReadArticles()
                         }
-                        Stepper(value: $store.fullContentCacheDays, in: 0...365) {
+                        Stepper(value: $settings.fullContentCacheDays, in: 0...365) {
                             if store.fullContentCacheDays == 0 {
                                 Text("全文缓存：不按时间清理")
                             } else {
@@ -277,14 +278,14 @@ struct SettingsView: View {
                             store.persistSettings()
                             store.pruneFullContentCache()
                         }
-                        Toggle(isOn: $store.fullContentURLPrefixEnabled) {
+                        Toggle(isOn: $settings.fullContentURLPrefixEnabled) {
                             Label("全文 URL 前缀", systemImage: "link.badge.plus")
                         }
                         .onChange(of: store.fullContentURLPrefixEnabled) { _, _ in
                             store.persistSettings()
                         }
                         if store.fullContentURLPrefixEnabled {
-                            TextField("前缀，如 https://archive.is/", text: $store.fullContentURLPrefix)
+                            TextField("前缀，如 https://archive.is/", text: $settings.fullContentURLPrefix)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .keyboardType(.URL)
@@ -469,19 +470,20 @@ struct FontSettingsView: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
+        @Bindable var settings = store.settings
         @Bindable var store = store
         Form {
             Section {
-                fontRow("分组标题", value: $store.feedTitleFontSize, range: 13...24)
-                fontRow("列表标题", value: $store.listTitleFontSize, range: 14...26)
-                fontRow("列表摘要", value: $store.listSummaryFontSize, range: 12...20)
+                fontRow("分组标题", value: $settings.feedTitleFontSize, range: 13...24)
+                fontRow("列表标题", value: $settings.listTitleFontSize, range: 14...26)
+                fontRow("列表摘要", value: $settings.listSummaryFontSize, range: 12...20)
             } header: {
                 Text("列表")
             }
             Section {
-                fontRow("文章标题", value: $store.readerTitleFontSize, range: 18...34)
-                fontRow("正文字号", value: $store.fontSize, range: 14...28)
-                fontRow("AI 摘要", value: $store.aiSummaryFontSize, range: 14...28)
+                fontRow("文章标题", value: $settings.readerTitleFontSize, range: 18...34)
+                fontRow("正文字号", value: $settings.fontSize, range: 14...28)
+                fontRow("AI 摘要", value: $settings.aiSummaryFontSize, range: 14...28)
             } header: {
                 Text("阅读")
             } footer: {

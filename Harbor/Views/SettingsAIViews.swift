@@ -8,6 +8,7 @@ struct AISettingsView: View {
     @State private var providerTestResults: [UUID: String] = [:]
 
     var body: some View {
+        @Bindable var settings = store.settings
         @Bindable var store = store
         Form {
             Section {
@@ -106,7 +107,7 @@ struct AISettingsView: View {
             }
 
             Section {
-                TextEditor(text: $store.translationPrompt)
+                TextEditor(text: $settings.translationPrompt)
                     .font(.system(size: 14, design: .monospaced))
                     .frame(minHeight: 110)
                 Button("恢复默认翻译 Prompt") {
@@ -120,7 +121,7 @@ struct AISettingsView: View {
             }
 
             Section {
-                Picker("全局摘要模板", selection: $store.globalSummaryPresetID) {
+                Picker("全局摘要模板", selection: $settings.globalSummaryPresetID) {
                     ForEach(store.summaryPromptPresets) { p in
                         Text(p.name).tag(p.id)
                     }
@@ -137,7 +138,7 @@ struct AISettingsView: View {
             }
 
             Section {
-                TextEditor(text: $store.explainPrompt)
+                TextEditor(text: $settings.explainPrompt)
                     .font(.system(size: 14, design: .monospaced))
                     .frame(minHeight: 110)
                 Button("恢复默认解释 Prompt") {
@@ -151,14 +152,14 @@ struct AISettingsView: View {
             }
 
             Section {
-                Toggle("智能兴趣过滤", isOn: $store.smartInterestFilterEnabled)
+                Toggle("智能兴趣过滤", isOn: $settings.smartInterestFilterEnabled)
                 if store.smartInterestFilterEnabled {
-                    Toggle("低分自动标已读", isOn: $store.autoMarkLowInterestRead)
-                    Toggle("列表按兴趣排序", isOn: $store.sortByInterestScore)
+                    Toggle("低分自动标已读", isOn: $settings.autoMarkLowInterestRead)
+                    Toggle("列表按兴趣排序", isOn: $settings.sortByInterestScore)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("低分阈值 \(String(format: "%.2f", store.lowInterestThreshold))")
                             .font(.subheadline)
-                        Slider(value: $store.lowInterestThreshold, in: 0.1...0.7, step: 0.05)
+                        Slider(value: $settings.lowInterestThreshold, in: 0.1...0.7, step: 0.05)
                     }
                     Button("清空兴趣画像") {
                         store.interestWeights = [:]
@@ -173,9 +174,9 @@ struct AISettingsView: View {
             }
 
             Section {
-                Toggle("模型费用路由", isOn: $store.modelRoutingEnabled)
+                Toggle("模型费用路由", isOn: $settings.modelRoutingEnabled)
                 if store.modelRoutingEnabled {
-                    Stepper(value: $store.modelRoutingShortLimit, in: 200...3000, step: 100) {
+                    Stepper(value: $settings.modelRoutingShortLimit, in: 200...3000, step: 100) {
                         Text("短文本阈值 \(store.modelRoutingShortLimit) 字")
                     }
                 }
@@ -223,6 +224,7 @@ struct AIBlacklistSettingsView: View {
     @State private var newTerm = ""
 
     var body: some View {
+        @Bindable var settings = store.settings
         @Bindable var store = store
         Form {
             Section {
@@ -297,6 +299,7 @@ struct AIProviderRow: View {
     let provider: AIProvider
 
     var body: some View {
+        @Bindable var settings = store.settings
         VStack(alignment: .leading, spacing: AppSpacing.xxs) {
             HStack {
                 Text(provider.name)
@@ -339,6 +342,7 @@ struct ProviderTag: View {
     let text: String
     let color: Color
     var body: some View {
+        @Bindable var settings = store.settings
         Text(text)
             .font(AppTypography.caption())
             .fontWeight(.medium)
@@ -389,6 +393,7 @@ struct EditProviderView: View {
     }
 
     var body: some View {
+        @Bindable var settings = store.settings
         NavigationStack {
             Form {
                 Section("Provider 模板") {
@@ -655,6 +660,7 @@ struct SummaryPromptPresetsView: View {
     @State private var showAdd = false
 
     var body: some View {
+        @Bindable var settings = store.settings
         List {
             Section {
                 ForEach(store.summaryPromptPresets) { preset in
@@ -732,6 +738,7 @@ struct EditSummaryPromptPresetView: View {
     private var isNew: Bool { preset == nil }
 
     var body: some View {
+        @Bindable var settings = store.settings
         NavigationStack {
             Form {
                 Section {

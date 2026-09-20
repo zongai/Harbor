@@ -168,15 +168,7 @@ struct ArticleListView: View {
                     Task { await toggleTranslateAll() }
                 } label: {
                     if isTranslatingAll {
-                        HStack(spacing: 4) {
-                            ProgressView().scaleEffect(0.75)
-                            if translationTotal > 0 {
-                                Text("\(translationDone)/\(translationTotal)")
-                                    .font(AppTypography.caption())
-                                    .monospacedDigit()
-                                    .foregroundStyle(theme.muted)
-                            }
-                        }
+                        ListTranslationChromeProgress()
                     } else {
                         Label(
                             showAllTranslations ? "显示原文" : "翻译列表",
@@ -390,6 +382,7 @@ struct ArticleListView: View {
         isTranslatingAll = true
         translationDone = 0
         translationTotal = jobs.count
+        store.chrome.listTranslationProgressText = "0/\(jobs.count)"
 
         // 整表一次交给底层并发池，避免「小批串行等待」把并发抵消掉
         // 仍按 batch 切片只为分段刷新进度与列表；批次间不落盘，结束统一 save
@@ -406,6 +399,7 @@ struct ArticleListView: View {
             updates.reserveCapacity(batch.count)
             for (job, result) in zip(batch, results) {
                 translationDone += 1
+                store.chrome.listTranslationProgressText = "\(translationDone)/\(translationTotal)"
                 guard let result, !result.isEmpty else { continue }
                 switch job.field {
                 case .title:
@@ -422,6 +416,7 @@ struct ArticleListView: View {
 
         isTranslatingAll = false
         translationDone = 0
+        store.chrome.listTranslationProgressText = ""
         translationTotal = 0
     }
 
@@ -838,5 +833,26 @@ struct ArticleRow: View {
         if !item.relativeTime.isEmpty { parts.append(item.relativeTime) }
         if item.isFavorite { parts.append("已收藏") }
         return parts.joined(separator: "，")
+    }
+}
+
+
+/// 只观察 SessionChrome 上的列表翻译进度，不绑定文章列表数据
+private struct ListTranslationChromeProgress: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.theme) private var theme
+
+    private var progressText: String { store.chrome.listTranslationProgressText }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ProgressView().scaleEffect(0.75)
+            if !progressText.isEmpty {
+                Text(progressText)
+                    .font(AppTypography.caption())
+                    .monospacedDigit()
+                    .foregroundStyle(theme.muted)
+            }
+        }
     }
 }

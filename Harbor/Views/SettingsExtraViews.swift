@@ -14,15 +14,16 @@ struct TranslationSettingsView: View {
     @State private var deeplKeyOK: [Int: Bool] = [:]
 
     var body: some View {
+        @Bindable var settings = store.settings
         @Bindable var store = store
         Form {
             Section {
-                Picker("翻译目标语言", selection: $store.targetLanguage) {
+                Picker("翻译目标语言", selection: $settings.targetLanguage) {
                     ForEach(AppLanguage.allCases) { lang in
                         Text(lang.displayName).tag(lang)
                     }
                 }
-                Picker("AI 输出语言", selection: $store.aiOutputLanguage) {
+                Picker("AI 输出语言", selection: $settings.aiOutputLanguage) {
                     ForEach(AppLanguage.allCases) { lang in
                         Text(lang.displayName).tag(lang)
                     }
@@ -79,7 +80,7 @@ struct TranslationSettingsView: View {
             }
 
             Section {
-                Picker("并发度", selection: $store.translationConcurrency) {
+                Picker("并发度", selection: $settings.translationConcurrency) {
                     Text("自动（推荐）").tag(0)
                     ForEach(1...8, id: \.self) { n in
                         Text("\(n) 路").tag(n)
@@ -127,7 +128,7 @@ struct TranslationSettingsView: View {
                         newMicrosoftKey = ""
                     }
                 }
-                TextField("资源区域（如 eastasia / eastus / global）", text: $store.microsoftTranslateRegion)
+                TextField("资源区域（如 eastasia / eastus / global）", text: $settings.microsoftTranslateRegion)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                 testButton(for: .microsoft)
@@ -175,7 +176,7 @@ struct TranslationSettingsView: View {
             // Lingva
             Section {
                 engineHeader("Lingva（免 Key）", selected: store.translationEngineChain.first == .lingva)
-                TextField("自定义实例 URL（可选）", text: $store.lingvaCustomBase)
+                TextField("自定义实例 URL（可选）", text: $settings.lingvaCustomBase)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
@@ -341,6 +342,7 @@ struct ArticleBlacklistSettingsView: View {
     @State private var appliedCount: Int?
 
     var body: some View {
+        @Bindable var settings = store.settings
         @Bindable var store = store
         Form {
             Section {

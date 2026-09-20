@@ -90,6 +90,16 @@
 - 全文抓取 RequestDeduper 去重
 - 观察面：已读/收藏不再整源替换（articleFlagsEpoch）
 
+## [1.3-82] — 构建中（ui-redesign-experiment）
+
+相对：`v1.3-81` / build164
+
+### 架构（观察域增量拆分）
+- SettingsStore：字体/主题/引擎等偏好独立 @Observable
+- AppStore @dynamicMemberLookup 兼容旧访问；设置页 Bindable(settings)
+- 列表翻译进度 ListTranslationChromeProgress 只观察 chrome
+- 阅读页翻译/摘要保持本地 @State（注释标明）
+
 ## [Unreleased]
 
 （自上次成功构建以来的改动，将在下次成功构建时归入正式条目。）

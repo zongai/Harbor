@@ -1,0 +1,58 @@
+import Foundation
+
+/// 用户偏好 / 引擎配置域 — 与 feeds、SessionChrome 分观察
+@Observable
+@MainActor
+final class SettingsStore {
+    var fontSize: Double = 17
+    var listTitleFontSize: Double = 18
+    var listSummaryFontSize: Double = 15
+    var readerTitleFontSize: Double = 24
+    var aiSummaryFontSize: Double = 22
+    var feedTitleFontSize: Double = 17
+    var groupTitleFontSize: Double = 13
+
+    var titleDisplayMode: TitleDisplayMode = .original
+    var defaultTranslationEngine: TranslationEngine = .google
+    var translationEngineChain: [TranslationEngine] = TranslationEngine.allCases
+    var aiProviders: [AIProvider] = [
+        AIProvider(id: UUID(), name: "OpenAI", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", kind: "openai"),
+        AIProvider(id: UUID(), name: "Anthropic", baseURL: "https://api.anthropic.com/v1", model: "claude-3-haiku-20240307", kind: "openai"),
+        AIProvider(id: UUID(), name: "Gemini", baseURL: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.0-flash", kind: "gemini")
+    ]
+    var defaultSummaryProviderID: UUID?
+    var defaultTranslationProviderID: UUID?
+    var defaultExplainProviderID: UUID?
+    var aiBlacklistTerms: [String] = []
+    var articleBlacklistTerms: [String] = []
+    var aiBlacklistFallbackProviderID: UUID?
+    var showReadArticles: Bool = false
+    var translationPrompt: String = AppStore.defaultTranslationPrompt
+    var summaryPrompt: String = AppStore.defaultSummaryPrompt
+    var explainPrompt: String = AppStore.defaultExplainPrompt
+    var readRetentionDays: Int = 7
+    var fullContentCacheDays: Int = 30
+    var fullContentURLPrefixEnabled: Bool = false
+    var fullContentURLPrefix: String = ""
+    var globalSummaryPresetID: String = SummaryPromptPreset.standardID
+    var summaryPromptPresets: [SummaryPromptPreset] = SummaryPromptPreset.builtInDefaults
+    var smartInterestFilterEnabled: Bool = false
+    var autoMarkLowInterestRead: Bool = false
+    var lowInterestThreshold: Double = 0.35
+    var sortByInterestScore: Bool = false
+    var modelRoutingEnabled: Bool = false
+    var modelRoutingShortLimit: Int = 800
+    var interestWeights: [String: Double] = [:]
+    var ttsVoice: String = ""
+    var ttsRate: Double = 1.2
+    var colorTheme: ReadingTheme = .classicLight
+    var appearanceMode: AppearanceMode = .system
+    var appFontFamily: AppFontFamily = .system
+    var feedSortMode: FeedSortMode = .unreadThenTitle
+    var targetLanguage: AppLanguage = .zhHans
+    var translationConcurrency: Int = 0
+    var aiOutputLanguage: AppLanguage = .zhHans
+    var microsoftTranslateRegion: String = "global"
+    var lingvaCustomBase: String = ""
+    var defaultChatProviderID: UUID?
+}
