@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @State private var showAdvancedSettings = false
     @Environment(AppStore.self) private var store
     @Environment(\.theme) private var theme
 
@@ -190,15 +189,13 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    if showAdvancedSettings {
-                        NavigationLink(destination: ArticleBlacklistSettingsView()) {
-                            HStack {
-                                Text("文章黑名单")
-                                Spacer()
-                                if !store.articleBlacklistTerms.isEmpty {
-                                    Text("\(store.articleBlacklistTerms.count)")
-                                        .foregroundStyle(.secondary)
-                                }
+                    NavigationLink(destination: ArticleBlacklistSettingsView()) {
+                        HStack {
+                            Text("文章黑名单")
+                            Spacer()
+                            if !store.articleBlacklistTerms.isEmpty {
+                                Text("\(store.articleBlacklistTerms.count)")
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -269,8 +266,7 @@ struct SettingsView: View {
                 }
                 .onAppear { cacheSizeText = store.cacheSizeDescription() }
 
-                if showAdvancedSettings {
-                    Section {
+                Section {
                         Stepper(value: $settings.readRetentionDays, in: 0...365) {
                             if store.readRetentionDays == 0 {
                                 Text("已读保留：关闭自动清理")
@@ -313,11 +309,10 @@ struct SettingsView: View {
                         if let settingsIOMessage {
                             Text(settingsIOMessage).font(.footnote).foregroundStyle(.secondary)
                         }
-                    } header: {
-                        Text("高级 · 清理与备份")
-                    } footer: {
-                        Text("设置备份默认不含 API Key。订阅源请用上方 OPML。")
-                    }
+                } header: {
+                    Text("清理与备份")
+                } footer: {
+                    Text("设置备份默认不含 API Key。订阅源请用上方 OPML。")
                 }
 
                 // MARK: 关于
@@ -348,33 +343,10 @@ struct SettingsView: View {
                     Text("Harbor · 观澜")
                 }
 
-                Section {
-                    Toggle(isOn: $showAdvancedSettings) {
-                        Label(
-                            showAdvancedSettings ? "高级选项：已开启" : "显示高级选项",
-                            systemImage: showAdvancedSettings ? "slider.horizontal.3" : "line.3.horizontal.decrease.circle"
-                        )
-                    }
-                } footer: {
-                    Text(showAdvancedSettings
-                          ? "已显示：文章黑名单、已读/缓存保留、设置导入导出。"
-                          : "默认精简。打开后可管理黑名单、缓存策略与设置备份。全文 URL 前缀在「数据」分区。")
-                }
             }
             .appFormChrome()
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showAdvancedSettings.toggle()
-                    } label: {
-                        Text(showAdvancedSettings ? "精简" : "高级")
-                            .fontWeight(.medium)
-                    }
-                    .accessibilityLabel(showAdvancedSettings ? "切换到精简设置" : "显示高级设置")
-                }
-            }
             .sheet(isPresented: $showSettingsExport) {
                 if let url = settingsExportURL {
                     SettingsExportPicker(url: url) { showSettingsExport = false }
