@@ -342,7 +342,6 @@ struct ProviderTag: View {
     let text: String
     let color: Color
     var body: some View {
-        @Bindable var settings = store.settings
         Text(text)
             .font(AppTypography.caption())
             .fontWeight(.medium)
