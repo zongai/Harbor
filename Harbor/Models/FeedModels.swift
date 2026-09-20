@@ -273,22 +273,8 @@ struct Article: Identifiable, Codable, Hashable, Sendable {
 
     var relativeTime: String {
         guard let date = publishedDate else { return "" }
-        let diff = Date().timeIntervalSince(date)
-        // 超过 30 天显示具体年月日（复用静态 formatter，避免列表每行反复创建）
-        if diff >= 30 * 86400 {
-            return Self.dayFormatter.string(from: date)
-        }
-        if diff < 3600 { return "\(max(0, Int(diff / 60)))分钟前" }
-        if diff < 86400 { return "\(Int(diff / 3600))小时前" }
-        return "\(Int(diff / 86400))天前"
+        return RelativeTimeFormat.string(for: date)
     }
-
-    private static let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "yyyy年M月d日"
-        return f
-    }()
 
     /// RSS 摘要是否偏短，适合触发全文抓取（不检查源级开关）
     var needsFullContentFetch: Bool {
@@ -299,6 +285,50 @@ struct Article: Identifiable, Codable, Hashable, Sendable {
 }
 
 /// 订阅源列表排序
+
+/// 相对时间：按「分钟桶」缓存，列表滚动时避免每行重复算字符串
+enum RelativeTimeFormat {
+    private static var minuteBucket: Int = -1
+    private static var cache: [Int: String] = [:]
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy年M月d日"
+        return f
+    }()
+
+    static func string(for date: Date, now: Date = Date()) -> String {
+        let bucket = Int(now.timeIntervalSince1970 / 60)
+        if bucket != minuteBucket {
+            minuteBucket = bucket
+            cache.removeAll(keepingCapacity: true)
+        }
+        // 缓存键：发布时刻精确到分钟即可
+        let key = Int(date.timeIntervalSince1970 / 60)
+        if let hit = cache[key] { return hit }
+        let text = compute(date: date, now: now)
+        cache[key] = text
+        return text
+    }
+
+    private static func compute(date: Date, now: Date) -> String {
+        let diff = now.timeIntervalSince(date)
+        if diff >= 30 * 86400 {
+            return dayFormatter.string(from: date)
+        }
+        if diff < 3600 {
+            let m = max(0, Int(diff / 60))
+            return "\(m)分钟前"
+        }
+        if diff < 86400 {
+            let h = Int(diff / 3600)
+            return "\(h)小时前"
+        }
+        let d = Int(diff / 86400)
+        return "\(d)天前"
+    }
+}
+
 enum AppLanguage: String, CaseIterable, Codable, Identifiable {
     case zhHans, zhHant, en, ja, ko, fr, de, es
 

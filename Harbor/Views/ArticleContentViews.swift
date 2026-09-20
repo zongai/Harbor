@@ -1464,7 +1464,7 @@ struct DownsampledArticleImage: View {
     @State private var image: UIImage?
     /// 阅读栏宽约屏宽，按 2× 屏宽像素上限解码
     private var maxPixel: CGFloat {
-        ImageDownsampling.maxPixel(forSidePoints: min(UIScreen.main.bounds.width, 680))
+        ImageDownsampling.articleMaxPixel()
     }
 
     var body: some View {

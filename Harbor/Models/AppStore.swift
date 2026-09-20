@@ -646,7 +646,10 @@ class AppStore: AIService.Runtime {
         scheduleFeedsPersist()
     }
 
-    func persistSettings() { saveToStorage() }
+    func persistSettings() {
+        SettingsRepository.save(makePersistedSettings())
+        scheduleICloudPush(kind: .settings)
+    }
 
     func updateArticle(_ article: Article) {
         var article = article
@@ -3455,7 +3458,8 @@ class AppStore: AIService.Runtime {
             FeedRepository.saveFeeds(feeds)
             persistReadLinks()
             persistFavoriteLinks()
-            scheduleICloudPush()
+            // 已读/收藏路径：长防抖推 iCloud，避免每次点已读都全量推
+            scheduleICloudPush(kind: .readState)
         }
     }
 
@@ -3481,7 +3485,7 @@ class AppStore: AIService.Runtime {
         persistFavoriteLinks()
         SettingsRepository.save(makePersistedSettings())
         OfflineCache.saveChatConversations(chatConversations)
-        scheduleICloudPush()
+        scheduleICloudPush(kind: .catalog)
     }
 
     func loadFromStorage() {
@@ -3516,11 +3520,27 @@ class AppStore: AIService.Runtime {
         }
     }
 
-    func scheduleICloudPush() {
+    /// iCloud 推送动机：设置变更应更快；已读/收藏可更长防抖，减少无意义全量推
+    enum ICloudPushKind {
+        case settings
+        case catalog
+        case readState
+
+        var delayNs: UInt64 {
+            switch self {
+            case .settings: return 500_000_000
+            case .catalog: return 800_000_000
+            case .readState: return 3_000_000_000
+            }
+        }
+    }
+
+    func scheduleICloudPush(kind: ICloudPushKind = .catalog) {
         guard ICloudSyncService.isEnabled, !isApplyingICloud else { return }
         iCloudPushTask?.cancel()
+        let delay = kind.delayNs
         iCloudPushTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return }
             pushToICloudNow()
         }

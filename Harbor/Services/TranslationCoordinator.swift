@@ -74,4 +74,35 @@ final class TranslationCoordinator: @unchecked Sendable {
         let list = chain.filter { seen.insert($0).inserted }
         return list.isEmpty ? [.google] : list
     }
+
+    /// 逐步下沉：按链顺序选出未在冷却中的引擎（执行仍由 AppStore 发起）
+    func nextAvailableEngine(
+        chain: [TranslationEngine],
+        preferred: TranslationEngine? = nil
+    ) -> TranslationEngine {
+        let ordered = Self.normalizedChain(chain)
+        if let preferred, ordered.contains(preferred), !isCooling(preferred) {
+            return preferred
+        }
+        for e in ordered where !isCooling(e) {
+            return e
+        }
+        return ordered.first ?? .google
+    }
+
+    /// 冷却时跳过，返回链上从 start 之后的下一可用引擎
+    func failoverEngine(
+        chain: [TranslationEngine],
+        after failed: TranslationEngine
+    ) -> TranslationEngine? {
+        let ordered = Self.normalizedChain(chain)
+        guard let idx = ordered.firstIndex(of: failed) else {
+            return ordered.first { !isCooling($0) }
+        }
+        for e in ordered.suffix(from: idx + 1) where !isCooling(e) {
+            return e
+        }
+        return nil
+    }
+
 }
