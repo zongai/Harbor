@@ -52,7 +52,7 @@
 - 主屏显示名：中文 **观澜**，英文 **Harbor**
 - CI scheme 与路径同步更新
 
-## [1.3-79] — 构建中（ui-redesign-experiment）
+## [1.3-79] — 构建成功 (build162 / Actions 35486533768) · 分支 ui-redesign-experiment
 
 相对：`v1.3-78` / build160
 
