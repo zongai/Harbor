@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// 全库搜索：标题、摘要、已抓全文（译文优先显示）
+/// 全库搜索：标题、摘要（默认不扫正文；防抖 + 可取消）
 struct SearchView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.theme) private var theme
     @State private var query = ""
     @State private var results: [Article] = []
     @State private var isSearching = false
+    /// 进行中的搜索任务；新输入会 cancel，避免乱序回写
+    @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -21,7 +23,7 @@ struct SearchView: View {
                                 .foregroundStyle(theme.muted)
                         }
                     } description: {
-                        Text("匹配标题、摘要与已抓取的全文")
+                        Text("匹配标题与摘要（不含全文）")
                             .font(AppTypography.body())
                             .foregroundStyle(theme.muted)
                     }
@@ -75,7 +77,7 @@ struct SearchView: View {
             .listStyle(.plain)
             .appScreenBackground()
             .navigationTitle("搜索")
-            .searchable(text: $query, prompt: "标题、摘要、全文")
+            .searchable(text: $query, prompt: "标题、摘要")
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
             }
@@ -84,17 +86,34 @@ struct SearchView: View {
 
     private func scheduleSearch(_ q: String) {
         let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchTask?.cancel()
+        searchTask = nil
         guard !trimmed.isEmpty else {
             results = []
             isSearching = false
             return
         }
         isSearching = true
-        // 轻量防抖：短查询同步即可
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 180_000_000)
+        // 快照 feeds，后台扫描，避免键入时堵主线程
+        let feedsSnapshot = store.feeds
+        searchTask = Task { @MainActor in
+            // 防抖：连续输入只执行最后一次
+            try? await Task.sleep(nanoseconds: 320_000_000)
+            guard !Task.isCancelled else { return }
             guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
-            results = store.searchArticles(query: trimmed, limit: 80)
+
+            let hits = await Task.detached(priority: .userInitiated) {
+                ArticleSearchService.search(
+                    feeds: feedsSnapshot,
+                    query: trimmed,
+                    limit: 80,
+                    includeFullText: false
+                )
+            }.value
+
+            guard !Task.isCancelled else { return }
+            guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+            results = hits
             isSearching = false
         }
     }

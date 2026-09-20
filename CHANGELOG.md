@@ -71,6 +71,15 @@
 ### 评论
 - Editorial 层级、主题背景、楼中楼竖线、空/错状态精修
 
+## [1.3-80] — 构建中（ui-redesign-experiment）
+
+相对：`v1.3-79` / build162
+
+### 性能
+- 已读/收藏：feeds 全量落盘 1.2s 防抖；read links 仍即时写入
+- 刷新：Fetch + XML 解析在 Task.detached，主线程只合并状态
+- 搜索：320ms 防抖、取消上一次任务、默认不扫正文 HTML
+
 ## [Unreleased]
 
 （自上次成功构建以来的改动，将在下次成功构建时归入正式条目。）

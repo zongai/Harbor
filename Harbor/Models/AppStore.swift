@@ -2469,9 +2469,14 @@ class AppStore: AIService.Runtime {
         return Array(tokens.prefix(40))
     }
 
-    /// 全库搜索：标题、摘要、译文、已抓全文
-    func searchArticles(query: String, limit: Int = 50) -> [Article] {
-        ArticleSearchService.search(feeds: feeds, query: query, limit: limit)
+    /// 全库搜索：默认仅标题+摘要（`includeFullText` 为 true 时才扫正文）
+    func searchArticles(query: String, limit: Int = 50, includeFullText: Bool = false) -> [Article] {
+        ArticleSearchService.search(
+            feeds: feeds,
+            query: query,
+            limit: limit,
+            includeFullText: includeFullText
+        )
     }
 
     /// 兴趣分可解释：命中的正/负向词
