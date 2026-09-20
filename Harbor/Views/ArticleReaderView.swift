@@ -266,6 +266,7 @@ struct ArticleReaderView: View {
                     html: displayContent,
                     fontSize: store.fontSize,
                     prefersChineseTypography: showTranslated,
+                    articleTitle: displayTitle,
                     onHighlight: { store.addHighlight(articleID: currentArticle.id, text: $0) },
                     suppressArticleSwipe: $suppressArticleSwipe
                 )

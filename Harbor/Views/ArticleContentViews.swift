@@ -7,6 +7,8 @@ struct ArticleContentView: View {
     let fontSize: Double
     /// 译文默认按中文排版；原文按内容语言自动判断
     var prefersChineseTypography: Bool = false
+    /// 页头已展示的文章标题；正文开头重复的 h1/段落实时去掉
+    var articleTitle: String = ""
     var onHighlight: ((String) -> Void)? = nil
     /// 表格横向滑动时置 true，供阅读页屏蔽换篇手势
     var suppressArticleSwipe: Binding<Bool> = .constant(false)
@@ -25,7 +27,8 @@ struct ArticleContentView: View {
         let n = html.count
         let head = html.prefix(48)
         let tail = n > 96 ? html.suffix(24) : ""
-        return "\(n)-\(head)-\(tail)-\(prefersChineseTypography)"
+        let t = articleTitle.prefix(40)
+        return "\(n)-\(head)-\(tail)-\(prefersChineseTypography)-\(t)"
     }
 
     var body: some View {
@@ -160,14 +163,23 @@ struct ArticleContentView: View {
         guard key != cachedParseKey else { return }
         let source = html
         let preferCN = prefersChineseTypography
+        let title = articleTitle
         // 短文同步解析（首屏无闪白）；长文后台解析避免阻塞滚动/进页
         if source.count < 12_000 {
-            cachedBlocks = ContentBlockParser.parse(source, prefersChineseTypography: preferCN)
+            cachedBlocks = ContentBlockParser.parse(
+                source,
+                prefersChineseTypography: preferCN,
+                articleTitle: title
+            )
             cachedParseKey = key
             return
         }
         Task.detached(priority: .userInitiated) {
-            let blocks = ContentBlockParser.parse(source, prefersChineseTypography: preferCN)
+            let blocks = ContentBlockParser.parse(
+                source,
+                prefersChineseTypography: preferCN,
+                articleTitle: title
+            )
             await MainActor.run {
                 // 若期间 html 已变，丢弃过期结果
                 guard key == parseKey else { return }
@@ -259,7 +271,11 @@ enum ContentBlockParser {
         options: .caseInsensitive
     )
 
-    static func parse(_ html: String, prefersChineseTypography: Bool = false) -> [ContentBlock] {
+    static func parse(
+        _ html: String,
+        prefersChineseTypography: Bool = false,
+        articleTitle: String = ""
+    ) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
         var working = HTMLUtils.decodePercentEncodings(HTMLUtils.decodeEntities(html))
 
@@ -582,7 +598,52 @@ enum ContentBlockParser {
                 ))
             }
         }
-        return blocks
+        return dropLeadingDuplicateTitle(blocks, articleTitle: articleTitle)
+    }
+
+    /// 页头已显示标题时，去掉正文开头重复的 h1/同文段落
+    private static func dropLeadingDuplicateTitle(_ blocks: [ContentBlock], articleTitle: String) -> [ContentBlock] {
+        let needle = normalizeTitleKey(articleTitle)
+        guard !needle.isEmpty, !blocks.isEmpty else { return blocks }
+        var result = blocks
+        // 跳过正文最前的图片（封面），再判断是否与标题重复
+        var index = 0
+        while index < result.count {
+            if case .image = result[index] {
+                index += 1
+                continue
+            }
+            break
+        }
+        guard index < result.count else { return result }
+        let text: String?
+        switch result[index] {
+        case .heading(let attr, _, _):
+            text = String(attr.characters)
+        case .paragraph(let attr, _):
+            text = String(attr.characters)
+        default:
+            text = nil
+        }
+        guard let text, titlesMatch(normalizeTitleKey(text), needle) else { return result }
+        result.remove(at: index)
+        return result
+    }
+
+    private static func normalizeTitleKey(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    }
+
+    private static func titlesMatch(_ a: String, _ b: String) -> Bool {
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        if a == b { return true }
+        if a.hasPrefix(b) || b.hasPrefix(a) {
+            let shorter = min(a.count, b.count)
+            return shorter >= 12 || Double(shorter) / Double(max(a.count, b.count)) >= 0.85
+        }
+        return false
     }
 
     /// 从 pre/code 内部 HTML 抽出纯文本，保留换行与缩进
@@ -1080,44 +1141,65 @@ private func parseHTMLTable(_ html: String) -> (headers: [String], rows: [[Strin
         }.filter { !$0.isEmpty }
     }
 
+    func cellsEqual(_ a: [String], _ b: [String]) -> Bool {
+        guard a.count == b.count, !a.isEmpty else { return false }
+        for i in 0..<a.count {
+            if a[i].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                != b[i].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                return false
+            }
+        }
+        return true
+    }
+
     var headers: [String] = []
-    // thead th first
+    // Prefer thead; strip it so its <tr> is not also treated as a data row
+    var bodyHTML = html
     if let theadRange = html.range(of: #"<thead[\s\S]*?</thead>"#, options: [.regularExpression, .caseInsensitive]) {
         headers = cellTexts(in: String(html[theadRange]), tag: "th")
         if headers.isEmpty {
             headers = cellTexts(in: String(html[theadRange]), tag: "td")
         }
+        bodyHTML.replaceSubrange(theadRange, with: "\n")
     }
+    if let tbodyRange = bodyHTML.range(of: #"<tbody[\s\S]*?</tbody>"#, options: [.regularExpression, .caseInsensitive]) {
+        bodyHTML = String(bodyHTML[tbodyRange])
+    }
+
     var rows: [[String]] = []
     let rowPattern = #"<tr\b[^>]*>([\s\S]*?)</tr>"#
     guard let rowRe = try? NSRegularExpression(pattern: rowPattern, options: .caseInsensitive) else {
         return (headers, rows)
     }
-    let ns = html as NSString
-    let trMatches = rowRe.matches(in: html, range: NSRange(location: 0, length: ns.length))
+    let ns = bodyHTML as NSString
+    let trMatches = rowRe.matches(in: bodyHTML, range: NSRange(location: 0, length: ns.length))
     for (i, m) in trMatches.enumerated() {
-        guard let r = Range(m.range(at: 1), in: html) else { continue }
-        let rowHTML = String(html[r])
-        // skip header row already taken from thead
-        if i == 0 && headers.isEmpty {
+        guard let r = Range(m.range(at: 1), in: bodyHTML) else { continue }
+        let rowHTML = String(bodyHTML[r])
+        // First / th row as header only when thead did not supply one
+        if headers.isEmpty && (i == 0 || rowHTML.lowercased().contains("<th")) {
             let ths = cellTexts(in: rowHTML, tag: "th")
             if !ths.isEmpty {
                 headers = ths
                 continue
             }
-        }
-        if rowHTML.lowercased().contains("<th") && headers.isEmpty {
-            headers = cellTexts(in: rowHTML, tag: "th")
-            if !headers.isEmpty { continue }
+            if i == 0 {
+                let tds = cellTexts(in: rowHTML, tag: "td")
+                if !tds.isEmpty {
+                    headers = tds
+                    continue
+                }
+            }
         }
         var cells = cellTexts(in: rowHTML, tag: "td")
         if cells.isEmpty {
             cells = cellTexts(in: rowHTML, tag: "th")
         }
-        // 过滤分页提示行
+        // 过滤分页提示行、与表头完全相同的重复行
         let joined = cells.joined(separator: " ").lowercased()
         if joined.contains("showing") && joined.contains("entries") { continue }
         if cells.isEmpty { continue }
+        if !headers.isEmpty && cellsEqual(cells, headers) { continue }
         rows.append(cells)
     }
     return (headers, rows)
