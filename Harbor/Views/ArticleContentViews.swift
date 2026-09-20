@@ -1688,6 +1688,8 @@ struct DownsampledArticleImage: View {
                             || host == "wp.com"
                             || host.contains("wordpress.com") {
                     request.setValue("https://www.visualcapitalist.com/", forHTTPHeaderField: "Referer")
+                } else if host.contains("nyt.com") || host.contains("nytimes.com") {
+                    request.setValue("https://cn.nytimes.com/", forHTTPHeaderField: "Referer")
                 } else if let scheme = url.scheme {
                     request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
                 }
