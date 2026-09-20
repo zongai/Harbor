@@ -23,7 +23,7 @@ struct SearchView: View {
                                 .foregroundStyle(theme.muted)
                         }
                     } description: {
-                        Text("匹配标题与摘要（不含全文）")
+                        Text("先匹配标题与摘要，再补充全文命中")
                             .font(AppTypography.body())
                             .foregroundStyle(theme.muted)
                     }
@@ -77,7 +77,7 @@ struct SearchView: View {
             .listStyle(.plain)
             .appScreenBackground()
             .navigationTitle("搜索")
-            .searchable(text: $query, prompt: "标题、摘要")
+            .searchable(text: $query, prompt: "标题、摘要，全文异步补充")
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
             }
@@ -86,6 +86,7 @@ struct SearchView: View {
 
     private func scheduleSearch(_ q: String) {
         let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 取消上一次：防抖窗口内与过期结果均丢弃
         searchTask?.cancel()
         searchTask = nil
         guard !trimmed.isEmpty else {
@@ -94,27 +95,49 @@ struct SearchView: View {
             return
         }
         isSearching = true
-        // 快照 feeds，后台扫描，避免键入时堵主线程
         let feedsSnapshot = store.feeds
         searchTask = Task { @MainActor in
-            // 防抖：连续输入只执行最后一次
-            try? await Task.sleep(nanoseconds: 320_000_000)
+            // 防抖 300ms（250–400ms 区间）
+            try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
             guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
 
-            let hits = await Task.detached(priority: .userInitiated) {
-                ArticleSearchService.search(
+            // Phase 1：仅标题 + 摘要（快）
+            let metaHits = await Task.detached(priority: .userInitiated) {
+                ArticleSearchService.searchMetadata(
                     feeds: feedsSnapshot,
                     query: trimmed,
-                    limit: 80,
-                    includeFullText: false
+                    limit: 80
                 )
             }.value
 
             guard !Task.isCancelled else { return }
             guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
-            results = hits
+            results = metaHits
             isSearching = false
+
+            // Phase 2：批量从 offline cache 补全文命中（可被下一次输入取消）
+            let exclude = Set(metaHits.map(\.id))
+            let extra = await Task.detached(priority: .utility) {
+                ArticleSearchService.searchFullTextSupplement(
+                    feeds: feedsSnapshot,
+                    query: trimmed,
+                    excludingIDs: exclude,
+                    limit: 40,
+                    batchSize: 24
+                )
+            }.value
+
+            guard !Task.isCancelled else { return }
+            guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+            if !extra.isEmpty {
+                var seen = Set(results.map(\.id))
+                var merged = results
+                for a in extra where seen.insert(a.id).inserted {
+                    merged.append(a)
+                }
+                results = merged
+            }
         }
     }
 }
