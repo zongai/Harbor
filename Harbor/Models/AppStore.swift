@@ -339,6 +339,8 @@ class AppStore: AIService.Runtime {
 
 
     private var readArticleLinks: Set<String> = []
+    /// 收藏链接即时集（与 feeds 防抖分离）
+    private var favoriteArticleLinks: Set<String> = []
 
     /// iCloud 同步开关（默认开）
     var iCloudSyncEnabled: Bool {
@@ -410,6 +412,52 @@ class AppStore: AIService.Runtime {
 
     private func loadReadLinks() {
         readArticleLinks = FeedRepository.loadReadLinks()
+    }
+
+    private func persistFavoriteLinks() {
+        FeedRepository.saveFavoriteLinks(favoriteArticleLinks)
+    }
+
+    private func loadFavoriteLinks() {
+        favoriteArticleLinks = FeedRepository.loadFavoriteLinks()
+    }
+
+    private func rememberFavoriteLink(_ link: String) {
+        let key = Self.canonicalLink(link)
+        guard !key.isEmpty else { return }
+        if favoriteArticleLinks.insert(key).inserted { persistFavoriteLinks() }
+    }
+
+    private func forgetFavoriteLink(_ link: String) {
+        let key = Self.canonicalLink(link)
+        guard !key.isEmpty else { return }
+        if favoriteArticleLinks.remove(key) != nil { persistFavoriteLinks() }
+    }
+
+    /// 启动或合并后：用即时链接集恢复已读/收藏（防抖窗口杀进程后的兜底）
+    private func applyFlagLinksToFeeds() {
+        guard !readArticleLinks.isEmpty || !favoriteArticleLinks.isEmpty else { return }
+        for i in feeds.indices {
+            for j in feeds[i].articles.indices {
+                let key = Self.canonicalLink(feeds[i].articles[j].link)
+                guard !key.isEmpty else { continue }
+                if readArticleLinks.contains(key) {
+                    feeds[i].articles[j].isRead = true
+                }
+                if favoriteArticleLinks.contains(key) {
+                    feeds[i].articles[j].isFavorite = true
+                }
+            }
+            feeds[i].unreadCount = feeds[i].articles.filter { !$0.isRead }.count
+        }
+        // 若收藏集为空则从现有 feeds 反填一次（迁移旧数据）
+        if favoriteArticleLinks.isEmpty {
+            for a in feeds.flatMap { $0.articles } where a.isFavorite {
+                let key = Self.canonicalLink(a.link)
+                if !key.isEmpty { favoriteArticleLinks.insert(key) }
+            }
+            if !favoriteArticleLinks.isEmpty { persistFavoriteLinks() }
+        }
     }
 
     private func rememberReadLink(_ link: String) {
@@ -535,6 +583,9 @@ class AppStore: AIService.Runtime {
                 feeds[i].articles[j].isFavorite.toggle()
                 if willFavorite {
                     boostInterest(from: feeds[i].articles[j])
+                    rememberFavoriteLink(feeds[i].articles[j].link)
+                } else {
+                    forgetFavoriteLink(feeds[i].articles[j].link)
                 }
                 articleFlags.bump(feeds[i].articles[j].id)
                 articleFlagsEpoch &+= 1
@@ -1315,6 +1366,7 @@ class AppStore: AIService.Runtime {
                 continue
             }
             if readArticleLinks.contains(key) { article.isRead = true }
+            if favoriteArticleLinks.contains(key) { article.isFavorite = true }
             // 仅标记有缓存，不把全文读入内存
             if OfflineCache.hasArticleHTML(link: article.link) {
                 article.hasFullContent = true
@@ -3216,34 +3268,45 @@ class AppStore: AIService.Runtime {
         defaultChatProviderID = s.defaultChatProviderID
     }
 
-    /// 高频路径：仅防抖写入 feeds 快照（read links / settings 不走这里）
+    /// 高频路径防抖写入 feeds 元数据快照。
+    /// 崩溃窗口约定：
+    /// - 已读 / 收藏：UserDefaults 链接集**即时**落盘（不依赖本防抖）
+    /// - 正文：OfflineCache HTML 在 evacuate / saveFeeds 时落盘
+    /// - feeds.json：合并后的元数据（标题/摘要/标志），杀进程最多丢防抖间隔内的非标志字段
     private func scheduleFeedsPersist() {
         pendingFeedsPersistTask?.cancel()
         pendingFeedsPersistTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.feedsPersistDelayNs)
             guard !Task.isCancelled else { return }
             pendingFeedsPersistTask = nil
+            evacuateAllHeavyBodiesInMemory()
             FeedRepository.saveFeeds(feeds)
-            // 与完整 save 一致：订阅变更后延迟推 iCloud，避免每次已读都 schedule
+            persistReadLinks()
+            persistFavoriteLinks()
             scheduleICloudPush()
         }
     }
 
-    /// 立即写入待定的 feeds（完整 saveToStorage / 刷新结束前调用）
+    /// 立即写入待定的 feeds（进入后台 / 完整 save / 刷新结束）
     func flushPendingFeedsPersist() {
         pendingFeedsPersistTask?.cancel()
         pendingFeedsPersistTask = nil
+        evacuateAllHeavyBodiesInMemory()
         FeedRepository.saveFeeds(feeds)
+        persistReadLinks()
+        persistFavoriteLinks()
     }
 
     func saveToStorage() {
         // 合并未刷盘的已读/收藏变更，避免被后续逻辑覆盖为旧快照
         pendingFeedsPersistTask?.cancel()
         pendingFeedsPersistTask = nil
+        evacuateAllHeavyBodiesInMemory()
         FeedRepository.saveFeeds(feeds)
         FeedRepository.saveGroups(groups)
         persistCollapsedGroups()
         persistReadLinks()
+        persistFavoriteLinks()
         SettingsRepository.save(makePersistedSettings())
         OfflineCache.saveChatConversations(chatConversations)
         scheduleICloudPush()
@@ -3254,6 +3317,8 @@ class AppStore: AIService.Runtime {
         groups = FeedRepository.loadGroups()
         loadCollapsedGroups()
         loadReadLinks()
+        loadFavoriteLinks()
+        applyFlagLinksToFeeds()
         applyPersistedSettings(SettingsRepository.load())
         if let loaded = OfflineCache.loadChatConversations() {
             chatConversations = loaded.sorted { $0.updatedAt > $1.updatedAt }

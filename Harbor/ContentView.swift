@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var store = AppStore()
     @Environment(\.colorScheme) private var systemColorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         let resolvedTheme = ReadingTheme.resolved(
@@ -33,5 +34,11 @@ struct ContentView: View {
         .environment(\.theme, tokens)
         .environment(\.readingTheme, resolvedTheme.colors)
         .preferredColorScheme(store.appearanceMode.preferredColorScheme)
+        .onChange(of: scenePhase) { _, phase in
+            // 进入后台立即刷盘，缩短防抖崩溃窗口
+            if phase == .background || phase == .inactive {
+                store.flushPendingFeedsPersist()
+            }
+        }
     }
 }

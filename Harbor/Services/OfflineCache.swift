@@ -61,21 +61,45 @@ enum OfflineCache {
 
     // MARK: - Feeds persistence (replaces large UserDefaults blob)
 
+    /// 正文阈值：与 AppStore.heavyBodyThreshold 对齐，写入 feeds.json 前剥离大正文
+    private static let heavyBodyThreshold = 1_200
+
+    /// 元数据快照：大正文/译文写入独立 HTML 文件后再编码，缩小 feeds.json 与崩溃窗口风险
     static func saveFeeds(_ feeds: [RSSFeed]) {
+        let slim = feedsForMetadataPersistence(feeds)
         do {
-            let data = try JSONEncoder().encode(feeds)
+            let data = try JSONEncoder().encode(slim)
             try data.write(to: feedsFileURL, options: [.atomic])
-            // 同步一份到 UserDefaults 作小备份（仅 id/title/url，避免撑爆）
-            let light = feeds.map { LightFeed(id: $0.id, title: $0.title, url: $0.url) }
+            let light = slim.map { LightFeed(id: $0.id, title: $0.title, url: $0.url) }
             if let lightData = try? JSONEncoder().encode(light) {
                 UserDefaults.standard.set(lightData, forKey: "feeds_light")
             }
         } catch {
-            // 回退：仍写入 UserDefaults，保证不丢数据
-            if let data = try? JSONEncoder().encode(feeds) {
+            if let data = try? JSONEncoder().encode(slim) {
                 UserDefaults.standard.set(data, forKey: "feeds")
             }
         }
+    }
+
+    /// 将正文落到 article HTML 缓存，feeds 内只保留元数据与短字段
+    private static func feedsForMetadataPersistence(_ feeds: [RSSFeed]) -> [RSSFeed] {
+        var copy = feeds
+        for i in copy.indices {
+            for j in copy[i].articles.indices {
+                var a = copy[i].articles[j]
+                if a.content.count >= heavyBodyThreshold {
+                    saveArticleHTML(link: a.link, html: a.content)
+                    a.hasFullContent = true
+                    a.content = ""
+                }
+                if let translated = a.translatedContent, translated.count >= heavyBodyThreshold {
+                    saveTranslatedHTML(link: a.link, html: translated)
+                    a.translatedContent = nil
+                }
+                copy[i].articles[j] = a
+            }
+        }
+        return copy
     }
 
     static func loadFeeds() -> [RSSFeed]? {
