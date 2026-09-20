@@ -1100,36 +1100,122 @@ enum ArticleContentFetcher {
             || host == "nytimes.com" || host.hasSuffix(".nytimes.com")
     }
 
-    /// 纽约时报中文网：收集 `article-paragraph` 为标准 `<p>`（阅读器依赖段落结构）
+    /// 纽约时报中文网：收集 `article-paragraph` 为标准 `<p>`，并保留文首/段内配图
     private static func extractNYTimesCNBody(_ html: String) -> String? {
+        var blocks: [String] = []
+
+        // 文首大图：figure.article-span-photo（在段落列表外）
+        if let re = try? NSRegularExpression(
+            pattern: #"<figure\b[^>]*class=["'][^"']*\barticle-span-photo\b[^"']*["'][^>]*>[\s\S]*?</figure>"#,
+            options: .caseInsensitive
+        ) {
+            let ns = html as NSString
+            for m in re.matches(in: html, range: NSRange(location: 0, length: ns.length)).prefix(2) {
+                let fig = ns.substring(with: m.range)
+                if let img = nytNormalizedFigureHTML(fig) {
+                    blocks.append(img)
+                }
+            }
+        }
+
         // 兼容 class 顺序/额外 token：article-paragraph 出现在 class 任意位置
         guard let regex = try? NSRegularExpression(
             pattern: #"<div\b[^>]*class=["'][^"']*\barticle-paragraph\b[^"']*["'][^>]*>([\s\S]*?)</div>"#,
             options: .caseInsensitive
-        ) else { return nil }
+        ) else { return blocks.isEmpty ? nil : blocks.joined(separator: "\n") }
         let ns = html as NSString
         let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
-        var paragraphs: [String] = []
         for m in matches {
             guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: html) else { continue }
             let inner = String(html[r])
+            // 段内配图（菜谱插图等）
+            if inner.lowercased().contains("<img") || inner.lowercased().contains("<figure") {
+                if let figRe = try? NSRegularExpression(
+                    pattern: #"<figure\b[^>]*>[\s\S]*?</figure>"#,
+                    options: .caseInsensitive
+                ) {
+                    let ins = inner as NSString
+                    for fm in figRe.matches(in: inner, range: NSRange(location: 0, length: ins.length)) {
+                        let fig = ins.substring(with: fm.range)
+                        if let img = nytNormalizedFigureHTML(fig) {
+                            blocks.append(img)
+                        }
+                    }
+                } else if let lone = nytExtractImgTags(from: inner).first {
+                    blocks.append(lone)
+                }
+            }
             let text = HTMLUtils.stripTags(inner)
                 .replacingOccurrences(of: "\u{00A0}", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            // 纯图段落：无足够正文则跳过文字
             guard text.count >= 8 else { continue }
             let lower = text.lowercased()
             if lower == "广告" || lower == "advertisement" { continue }
             if lower.hasPrefix("订阅") && text.count < 24 { continue }
-            // 纯文本包进 <p>，避免残留复杂嵌套导致阅读页解析为空
+            // 相关推荐缩略图旁的短链标题（「豌豆有多健康？」）常夹在文末，过短且像系列导航则跳过
+            if text.count < 40, lower.contains("有多健康") { continue }
             let escaped = text
                 .replacingOccurrences(of: "&", with: "&amp;")
                 .replacingOccurrences(of: "<", with: "&lt;")
-            paragraphs.append("<p>\(escaped)</p>")
+            blocks.append("<p>\(escaped)</p>")
         }
-        guard paragraphs.count >= 2 else { return nil }
-        let joined = paragraphs.joined(separator: "\n")
-        let len = HTMLUtils.stripTags(joined).count
-        return len >= 120 ? joined : nil
+        // 至少要有正文；有图无字也接受（极少见）
+        let textLen = HTMLUtils.stripTags(blocks.joined()).count
+        let imgCount = blocks.filter { $0.lowercased().contains("<img") }.count
+        guard blocks.count >= 2 || (imgCount >= 1 && textLen >= 40) else { return nil }
+        guard textLen >= 120 || imgCount >= 1 else { return nil }
+        return blocks.joined(separator: "\n")
+    }
+
+    /// 将 figure / img 规范为阅读器可识别的简单标签（提升 data-src）
+    private static func nytNormalizedFigureHTML(_ figureHTML: String) -> String? {
+        let imgs = nytExtractImgTags(from: figureHTML)
+        guard !imgs.isEmpty else { return nil }
+        // 附带简短说明（若有）
+        var caption = ""
+        if let cap = matchFirst(#"<figcaption\b[^>]*>([\s\S]*?)</figcaption>"#, in: figureHTML) {
+            let t = HTMLUtils.stripTags(cap)
+                .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.count >= 2, t.count < 200 {
+                caption = "<p><em>\(t.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;"))</em></p>"
+            }
+        }
+        return imgs.joined(separator: "\n") + (caption.isEmpty ? "" : "\n" + caption)
+    }
+
+    private static func nytExtractImgTags(from html: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: .caseInsensitive) else {
+            return []
+        }
+        let ns = html as NSString
+        var out: [String] = []
+        for m in re.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+            var tag = ns.substring(with: m.range)
+            // 提升 data-src
+            if let dataSrc = matchFirst(#"data-src=["']([^"']+)["']"#, in: tag),
+               !dataSrc.isEmpty,
+               !dataSrc.hasPrefix("data:") {
+                if let srcRe = try? NSRegularExpression(pattern: #"\s+src=["'][^"']*["']"#, options: .caseInsensitive) {
+                    tag = srcRe.stringByReplacingMatches(
+                        in: tag,
+                        range: NSRange(location: 0, length: (tag as NSString).length),
+                        withTemplate: ""
+                    )
+                }
+                if tag.lowercased().hasPrefix("<img") {
+                    tag = "<img src=\"\(dataSrc)\"" + tag.dropFirst(4)
+                }
+            }
+            let src = imageSrc(from: tag)?.lowercased() ?? ""
+            // 跳过相关推荐小缩略图
+            if src.contains("thumblarge") || src.contains("thumbStandard".lowercased()) { continue }
+            if src.contains("logo") || src.contains("icon") { continue }
+            if src.isEmpty { continue }
+            out.append(tag)
+        }
+        return out
     }
 
     /// SpaceNews：从 entry-content 收集 wp-block-paragraph / <p>
