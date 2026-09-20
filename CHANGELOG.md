@@ -80,7 +80,7 @@
 - 刷新：Fetch + XML 解析在 Task.detached，主线程只合并状态
 - 搜索：320ms 防抖、取消上一次任务、默认不扫正文 HTML
 
-## [1.3-81] — 构建中（ui-redesign-experiment）
+## [1.3-81] — 构建成功 (build164 / Actions 35493004976) · 分支 ui-redesign-experiment
 
 相对：`v1.3-80` / build163
 
