@@ -18,6 +18,11 @@ class AppStore: AIService.Runtime {
     var refreshProgressTitle = ""
     /// 刷新会话号：递增即取消进行中的 refreshAll
     private var refreshSessionID = 0
+    /// 已读/收藏等引起的 feeds 全量落盘防抖任务（与立即写入的 read links 分离）
+    private var pendingFeedsPersistTask: Task<Void, Never>?
+    /// 防抖间隔：连续滑动已读时合并为一次 JSON 编码
+    private static let feedsPersistDelayNs: UInt64 = 1_200_000_000
+
     var listTranslationProgressText = ""
     private(set) var listTranslationSessionID = 0
     var errorMessage: String?
@@ -247,14 +252,16 @@ class AppStore: AIService.Runtime {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
                 if !feeds[i].articles[j].isRead {
                     feeds[i].articles[j].isRead = true
-                    feeds[i].unreadCount = max(0, feeds[i].articles.filter { !$0.isRead }.count)
+                    // 增量维护未读数，避免整表 filter
+                    feeds[i].unreadCount = max(0, feeds[i].unreadCount - 1)
                 }
                 rememberReadLink(feeds[i].articles[j].link)
                 let refreshed = feeds[i]
                 feeds[i] = refreshed
             }
         }
-        saveToStorage()
+        // 已读链接已即时落盘；feeds 快照防抖写入，避免每次滑动全量 encode
+        scheduleFeedsPersist()
     }
 
     func markAsUnread(_ article: Article) {
@@ -262,14 +269,14 @@ class AppStore: AIService.Runtime {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
                 if feeds[i].articles[j].isRead {
                     feeds[i].articles[j].isRead = false
-                    feeds[i].unreadCount = feeds[i].articles.filter { !$0.isRead }.count
+                    feeds[i].unreadCount += 1
                 }
                 forgetReadLink(feeds[i].articles[j].link)
                 let refreshed = feeds[i]
                 feeds[i] = refreshed
             }
         }
-        saveToStorage()
+        scheduleFeedsPersist()
     }
 
     func markAllAsRead(in feedID: UUID) {
@@ -284,7 +291,7 @@ class AppStore: AIService.Runtime {
             feeds[i].unreadCount = 0
             let refreshed = feeds[i]
             feeds[i] = refreshed
-            saveToStorage()
+            scheduleFeedsPersist()
         }
     }
 
@@ -296,9 +303,11 @@ class AppStore: AIService.Runtime {
                 if willFavorite {
                     boostInterest(from: feeds[i].articles[j])
                 }
+                let refreshed = feeds[i]
+                feeds[i] = refreshed
             }
         }
-        saveToStorage()
+        scheduleFeedsPersist()
     }
 
     func persistSettings() { saveToStorage() }
@@ -2498,7 +2507,8 @@ class AppStore: AIService.Runtime {
             let cur = interestWeights[t] ?? 0
             interestWeights[t] = min(2.0, cur + 0.25)
         }
-        persistSettings()
+        // 仅写设置（含兴趣权重）；不触发全量 feeds encode（由 scheduleFeedsPersist 合并）
+        SettingsRepository.save(makePersistedSettings())
     }
 
     func setFeedSummaryPreset(_ feedID: UUID, presetID: String) {
@@ -2884,7 +2894,30 @@ class AppStore: AIService.Runtime {
         defaultChatProviderID = s.defaultChatProviderID
     }
 
+    /// 高频路径：仅防抖写入 feeds 快照（read links / settings 不走这里）
+    private func scheduleFeedsPersist() {
+        pendingFeedsPersistTask?.cancel()
+        pendingFeedsPersistTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.feedsPersistDelayNs)
+            guard !Task.isCancelled else { return }
+            pendingFeedsPersistTask = nil
+            FeedRepository.saveFeeds(feeds)
+            // 与完整 save 一致：订阅变更后延迟推 iCloud，避免每次已读都 schedule
+            scheduleICloudPush()
+        }
+    }
+
+    /// 立即写入待定的 feeds（完整 saveToStorage / 刷新结束前调用）
+    func flushPendingFeedsPersist() {
+        pendingFeedsPersistTask?.cancel()
+        pendingFeedsPersistTask = nil
+        FeedRepository.saveFeeds(feeds)
+    }
+
     func saveToStorage() {
+        // 合并未刷盘的已读/收藏变更，避免被后续逻辑覆盖为旧快照
+        pendingFeedsPersistTask?.cancel()
+        pendingFeedsPersistTask = nil
         FeedRepository.saveFeeds(feeds)
         FeedRepository.saveGroups(groups)
         persistCollapsedGroups()
