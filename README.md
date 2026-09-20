@@ -1,6 +1,6 @@
-# IosRss
+# Harbor（观澜）
 
-原生 SwiftUI 实现的 iOS / iPadOS RSS 阅读器。支持 RSS 与 Atom，内置全文抓取、多引擎翻译、AI 摘要 / 解释 / 对话、Edge TTS 朗读、源分组、评论（Substack / HN / Engadget 等）与离线缓存。
+**Harbor**（中文名：**观澜**）是原生 SwiftUI 实现的 iOS / iPadOS RSS 阅读器。支持 RSS 与 Atom，内置全文抓取、多引擎翻译、AI 摘要 / 解释 / 对话、Edge TTS 朗读、源分组、评论（Substack / HN / Engadget 等）与离线缓存。
 
 **版本**：本地调试 `v1.3-77`；CI 构建 `v1.3-77-build{N}`（`N` = GitHub Actions `run_number`）。
 

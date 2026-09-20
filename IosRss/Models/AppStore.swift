@@ -2685,7 +2685,7 @@ class AppStore: AIService.Runtime {
 
 
     func exportOPML() -> String {
-        var lines: [String] = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<opml version=\"2.0\">", "  <head><title>IosRss Subscriptions</title></head>", "  <body>"]
+        var lines: [String] = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<opml version=\"2.0\">", "  <head><title>Harbor Subscriptions</title></head>", "  <body>"]
         func xmlEscape(_ s: String) -> String {
             s.replacingOccurrences(of: "&", with: "\u{0026}amp;").replacingOccurrences(of: "<", with: "\u{0026}lt;").replacingOccurrences(of: ">", with: "\u{0026}gt;").replacingOccurrences(of: "\"", with: "\u{0026}quot;")
         }

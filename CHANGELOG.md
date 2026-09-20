@@ -29,6 +29,9 @@
 
 相对：`v1.3-76` / 1.3-76 成功构建
 
+### 品牌
+- 项目更名为 **Harbor**（中文 **观澜**）：主屏显示名、导出文件名、CI IPA / Release 标题；内部 Bundle ID 与缓存目录保持兼容
+
 ### UI / 体验（Editorial 重设计实验）
 - **Design Tokens**：`AppSpacing` / `AppRadius` / `AppLayout` / `AppMotion`；`readingColumn()` 大屏居中阅读列
 - **阅读页**：源名→大标题→元信息层级；正文行距/段距；h1–h3 与 blockquote 独立样式；图片 continuous 圆角；工具栏主操作（收藏/翻译）+ ⋯ 溢出（全文/摘要/朗读/评论/浏览器/分享）；细阅读进度条

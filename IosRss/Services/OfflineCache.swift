@@ -1,7 +1,7 @@
 import Foundation
 
 /// 离线缓存：订阅数据、Feed XML、文章全文 HTML、简单图片字节
-/// 目录：Application Support/IosRss/
+/// 目录：Application Support/IosRss/（历史路径，重命名为 Harbor 后仍沿用以保留离线数据）
 enum OfflineCache {
 
     // MARK: - Paths

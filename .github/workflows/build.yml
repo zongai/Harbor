@@ -45,7 +45,7 @@ jobs:
           MARKETING=$(echo "$MARKETING" | tr -cd 'A-Za-z0-9._-')
           BUILD=$(echo "$BUILD" | tr -cd 'A-Za-z0-9._-')
           RUN="${{ github.run_number }}"
-          IPA_NAME="IosRss-${MARKETING}-${BUILD}-build${RUN}.ipa"
+          IPA_NAME="Harbor-${MARKETING}-${BUILD}-build${RUN}.ipa"
           DISPLAY="v${MARKETING}-${BUILD}-build${RUN}"
           echo "version=${MARKETING}" >> "$GITHUB_OUTPUT"
           echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
@@ -80,7 +80,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            INFOPLIST_KEY_IosRssGitHubBuild=${{ github.run_number }} \
+            INFOPLIST_KEY_HarborGitHubBuild=${{ github.run_number }} \
             clean build
 
       - name: Package IPA
@@ -93,7 +93,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v6
         with:
-          name: IosRss-ipa-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.build }}-build${{ steps.ver.outputs.run }}
+          name: Harbor-ipa-${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.build }}-build${{ steps.ver.outputs.run }}
           path: ${{ steps.ver.outputs.ipa_name }}
 
       - name: Generate release notes
@@ -143,7 +143,7 @@ jobs:
         with:
           files: ${{ steps.ver.outputs.ipa_name }}
           tag_name: ${{ steps.ver.outputs.display }}
-          name: IosRss ${{ steps.ver.outputs.display }}
+          name: Harbor ${{ steps.ver.outputs.display }}
           body_path: /tmp/release_notes.md
           generate_release_notes: false
           target_commitish: ${{ steps.ref.outputs.sha }}

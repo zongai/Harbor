@@ -318,7 +318,7 @@ struct SettingsView: View {
                     Button {
                         do {
                             let data = try store.exportSettingsJSON(includeSecrets: exportIncludeSecrets)
-                            let url = FileManager.default.temporaryDirectory.appendingPathComponent("IosRss-settings.json")
+                            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Harbor-settings.json")
                             try data.write(to: url, options: .atomic)
                             settingsExportURL = url
                             showSettingsExport = true

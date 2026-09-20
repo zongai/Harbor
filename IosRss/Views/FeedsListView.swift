@@ -404,7 +404,7 @@ struct FeedsListView: View {
         switch kind {
         case .opml:
             content = store.exportOPML()
-            filename = "IosRss-subscriptions.opml"
+            filename = "Harbor-subscriptions.opml"
         }
         guard !content.isEmpty,
               let url = store.writeExportFile(content: content, filename: filename) else {

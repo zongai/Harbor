@@ -18,7 +18,7 @@ enum AppVersion {
     /// GitHub Actions run_number（优先编译期常量，其次 Info.plist）
     static var githubBuild: String? {
         if !githubBuildNumber.isEmpty { return githubBuildNumber }
-        for key in ["IosRssGitHubBuild", "GitHubBuild", "CI_BUILD_NUMBER"] {
+        for key in ["HarborGitHubBuild", "IosRssGitHubBuild", "GitHubBuild", "CI_BUILD_NUMBER"] {
             if let v = Bundle.main.infoDictionary?[key] as? String, !v.isEmpty { return v }
             if let n = Bundle.main.infoDictionary?[key] as? NSNumber { return n.stringValue }
         }
