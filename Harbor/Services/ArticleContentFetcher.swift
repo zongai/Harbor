@@ -700,9 +700,14 @@ enum ArticleContentFetcher {
         let title = extractTitle(from: html)
 
         // 站点特化：在通用语义标签之前尝试（避免 <article> 只匹配到订阅墙短文）
-        if let site = extractByKnownSite(work, host: baseURL.host?.lowercased() ?? "") {
-            let cleaned = cleanContentHTML(truncateArticleTail(site), baseURL: baseURL)
-            if HTMLUtils.stripTags(cleaned).count >= 200 {
+        let hostLower = baseURL.host?.lowercased() ?? ""
+        if let site = extractByKnownSite(work, host: hostLower) {
+            var cleaned = cleanContentHTML(truncateArticleTail(site), baseURL: baseURL)
+            if isWordPressChartHost(baseURL.host) {
+                cleaned = ensureChartImages(cleaned, pageHTML: html, baseURL: baseURL)
+            }
+            if HTMLUtils.stripTags(cleaned).count >= 200
+                || cleaned.lowercased().contains("<img") {
                 return Extracted(title: title, content: cleaned)
             }
         }
@@ -740,6 +745,50 @@ enum ArticleContentFetcher {
 
         let plain = HTMLUtils.stripTags(work)
         return Extracted(title: title, content: "<p>\(plain.prefix(8000))</p>")
+    }
+
+    /// 图表站正文缺图时，用 og:image / twitter:image / 页内大图兜底
+    private static func ensureChartImages(_ content: String, pageHTML: String, baseURL: URL) -> String {
+        let imgCount = content.lowercased().components(separatedBy: "<img").count - 1
+        if imgCount >= 1 { return content }
+        var candidates: [String] = []
+        if let og = matchFirst(#"<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']"#, in: pageHTML)
+            ?? matchFirst(#"<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']"#, in: pageHTML) {
+            candidates.append(og)
+        }
+        if let tw = matchFirst(#"<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']"#, in: pageHTML)
+            ?? matchFirst(#"<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']"#, in: pageHTML) {
+            candidates.append(tw)
+        }
+        // 页内 wp-image / uploads 大图
+        if let re = try? NSRegularExpression(pattern: #"<img\b[^>]*src=["']([^"']+)["'][^>]*>"#, options: .caseInsensitive) {
+            let ns = pageHTML as NSString
+            for m in re.matches(in: pageHTML, range: NSRange(location: 0, length: ns.length)).prefix(12) {
+                guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: pageHTML) else { continue }
+                let src = String(pageHTML[r])
+                let low = src.lowercased()
+                if low.contains("avatar") || low.contains("logo") || low.contains("emoji") { continue }
+                if low.contains("uploads") || low.contains("wp-content") || low.contains("i0.wp.com") || low.contains("i1.wp.com") {
+                    candidates.append(src)
+                }
+            }
+        }
+        var seen = Set<String>()
+        var inject: [String] = []
+        for raw in candidates {
+            let abs: String = {
+                if raw.hasPrefix("//") { return "https:" + raw }
+                if raw.hasPrefix("http") { return raw }
+                return URL(string: raw, relativeTo: baseURL)?.absoluteString ?? raw
+            }()
+            let key = imageDedupeKey(abs)
+            guard !key.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            inject.append("<p><img src=\"\(abs)\" alt=\"\"></p>")
+            if inject.count >= 3 { break }
+        }
+        guard !inject.isEmpty else { return content }
+        return inject.joined(separator: "\n") + "\n" + content
     }
 
     private static func extractTitle(from html: String) -> String? {
@@ -1053,17 +1102,24 @@ enum ArticleContentFetcher {
         return textLen >= 120 ? work : html
     }
 
-    /// Visual Capitalist：去掉订阅/相关图表尾巴，并做图片去重前预处理
+    /// Visual Capitalist：去掉订阅/相关图表尾巴；保留正文内图表 img
     private static func sanitizeVisualCapitalistBody(_ html: String) -> String {
         var work = truncateArticleTail(html)
+        // 勿用裸 subscribe/newsletter：部分主题会把正文包在含这些词的外层里，误删整段含图内容
         work = removeBlocksWithClassTokens(work, tokens: [
             "related-posts", "jp-relatedposts", "sharedaddy", "jetpack-share",
-            "newsletter", "subscribe", "vc-newsletter", "entry-related",
-            "wp-block-jetpack-subscriptions", "post-footer"
+            "vc-newsletter", "entry-related",
+            "wp-block-jetpack-subscriptions", "post-footer",
+            "jetpack_subscription_widget", "wp-block-jetpack-email"
         ])
         work = truncateArticleTail(work)
+        // 图表站：再提升一次懒加载 / 锚点大图，避免只剩模糊占位
+        work = promoteLazyAndSrcsetImages(work)
+        work = promoteAnchoredFullImages(work)
+        work = promotePictureSourceImages(work)
         let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
-        return textLen >= 80 ? work : html
+        let imgCount = work.lowercased().components(separatedBy: "<img").count - 1
+        return (textLen >= 80 || imgCount >= 1) ? work : html
     }
 
     /// Foreign Affairs：去掉订阅 CTA、JS 提示，保留段落正文
@@ -1424,6 +1480,8 @@ enum ArticleContentFetcher {
             options: [.regularExpression, .caseInsensitive]
         )
         work = promoteLazyAndSrcsetImages(work)
+        work = promoteAnchoredFullImages(work)
+        work = promotePictureSourceImages(work)
         work = absolutizeAttributes(work, attr: "src", baseURL: baseURL)
         work = absolutizeAttributes(work, attr: "href", baseURL: baseURL)
         // 去掉模糊占位 / 同图清晰+模糊双份（Visual Capitalist 等）
@@ -1462,6 +1520,11 @@ enum ArticleContentFetcher {
             bestScore[item.key] = item.score
             bestLoc[item.key] = item.loc
         }
+        // 若全部被当成占位丢掉，至少保留得分最高的一张（图表站首图）
+        if bestLoc.isEmpty, let top = scored.max(by: { $0.score < $1.score }) {
+            bestLoc[top.key] = top.loc
+            bestScore[top.key] = top.score
+        }
         let keepLocs = Set(bestLoc.values)
 
         var result = html
@@ -1469,9 +1532,94 @@ enum ArticleContentFetcher {
             let loc = m.range.location
             guard let r = Range(m.range, in: result) else { continue }
             let tag = String(result[r])
-            let shouldDrop = !keepLocs.contains(loc) || isLowQualityPlaceholderImage(tag)
+            // 已选中的保留；未选中且为占位则删；未选中但非占位且同 key 已有更好图则删
+            let shouldDrop = !keepLocs.contains(loc)
             if shouldDrop {
                 result.replaceSubrange(r, with: "")
+            } else if isLowQualityPlaceholderImage(tag), keepLocs.count > 1 {
+                // 多图时仍可丢掉明确占位
+                result.replaceSubrange(r, with: "")
+            }
+        }
+        return result
+    }
+
+    /// `<a href="full.jpg"><img src="thumb.jpg"></a>` → 用链接大图替换 img src
+    private static func promoteAnchoredFullImages(_ html: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<a\b[^>]*href=["']([^"']+\.(?:jpg|jpeg|png|webp|gif)(?:\?[^"']*)?)["'][^>]*>\s*(<img\b[^>]*>)"#,
+            options: [.caseInsensitive]
+        ) else { return html }
+        let ns = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length)).reversed()
+        var result = html
+        for m in matches {
+            guard m.numberOfRanges >= 3,
+                  let hrefR = Range(m.range(at: 1), in: result),
+                  let imgR = Range(m.range(at: 2), in: result) else { continue }
+            let href = String(result[hrefR])
+            let imgTag = String(result[imgR])
+            let current = imageSrc(from: imgTag) ?? ""
+            // 仅当链接图明显更清晰，或当前 src 是占位时替换
+            let hrefScore = imageQualityScore(tag: imgTag, src: href)
+            let curScore = imageQualityScore(tag: imgTag, src: current)
+            guard hrefScore >= curScore || isLowQualityPlaceholderImage(imgTag) || current.isEmpty else { continue }
+            var out = imgTag
+            if let re = try? NSRegularExpression(pattern: #"\s+src=["'][^"']*["']"#, options: .caseInsensitive) {
+                out = re.stringByReplacingMatches(
+                    in: out,
+                    range: NSRange(location: 0, length: (out as NSString).length),
+                    withTemplate: ""
+                )
+            }
+            if out.lowercased().hasPrefix("<img") {
+                out = "<img src=\"\(href)\"" + out.dropFirst(4)
+            }
+            result.replaceSubrange(imgR, with: out)
+        }
+        return result
+    }
+
+    /// `<picture><source srcset="...">` 提升到内部 `<img src>`
+    private static func promotePictureSourceImages(_ html: String) -> String {
+        guard let picRe = try? NSRegularExpression(
+            pattern: #"<picture\b[^>]*>([\s\S]*?)</picture>"#,
+            options: .caseInsensitive
+        ) else { return html }
+        let ns = html as NSString
+        let matches = picRe.matches(in: html, range: NSRange(location: 0, length: ns.length)).reversed()
+        var result = html
+        for m in matches {
+            guard let full = Range(m.range, in: result),
+                  m.numberOfRanges >= 2,
+                  let innerR = Range(m.range(at: 1), in: result) else { continue }
+            let inner = String(result[innerR])
+            var best: String?
+            if let srcset = matchFirst(#"<source\b[^>]*srcset=["']([^"']+)["']"#, in: inner) {
+                best = bestURLFromSrcset(srcset)
+            }
+            if best == nil, let srcset = matchFirst(#"<img\b[^>]*srcset=["']([^"']+)["']"#, in: inner) {
+                best = bestURLFromSrcset(srcset)
+            }
+            guard let url = best, !url.isEmpty else { continue }
+            if let imgRange = firstMatchRange(#"<img\b[^>]*>"#, in: String(result[full])) {
+                // imgRange is relative to picture substring — re-promote via string replace on picture block
+                var block = String(result[full])
+                if let imgTagRange = firstMatchRange(#"<img\b[^>]*>"#, in: block) {
+                    var tag = String(block[imgTagRange])
+                    if let re = try? NSRegularExpression(pattern: #"\s+src=["'][^"']*["']"#, options: .caseInsensitive) {
+                        tag = re.stringByReplacingMatches(
+                            in: tag,
+                            range: NSRange(location: 0, length: (tag as NSString).length),
+                            withTemplate: ""
+                        )
+                    }
+                    if tag.lowercased().hasPrefix("<img") {
+                        tag = "<img src=\"\(url)\"" + tag.dropFirst(4)
+                    }
+                    block.replaceSubrange(imgTagRange, with: tag)
+                    result.replaceSubrange(full, with: block)
+                }
             }
         }
         return result
@@ -1691,13 +1839,20 @@ enum ArticleContentFetcher {
                     contentHTML = "<p><img src=\"" + featured + "\" alt=\"\"></p>\n" + contentHTML
                 }
             }
-            // 正文里再扫一遍 figure/img 懒加载字段
+            // 正文里再扫一遍 figure/img 懒加载字段与锚点大图
             contentHTML = promoteLazyAndSrcsetImages(contentHTML)
+            contentHTML = promoteAnchoredFullImages(contentHTML)
+            contentHTML = promotePictureSourceImages(contentHTML)
             guard !contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             var cleaned = cleanContentHTML(contentHTML, baseURL: pageURL)
             if isWordPressChartHost(pageURL.host) {
                 cleaned = sanitizeVisualCapitalistBody(cleaned)
                 cleaned = dedupeArticleImages(cleaned)
+                // 仍无图时，用 featured / jetpack 图兜底
+                let imgs = cleaned.lowercased().components(separatedBy: "<img").count - 1
+                if imgs < 1, let featured = featuredImageURL(fromWordPress: obj) {
+                    cleaned = "<p><img src=\"\(featured)\" alt=\"\"></p>\n" + cleaned
+                }
             }
             let len = HTMLUtils.stripTags(cleaned).count
             let imgCount = cleaned.lowercased().components(separatedBy: "<img").count - 1

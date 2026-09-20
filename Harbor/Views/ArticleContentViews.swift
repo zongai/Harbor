@@ -1491,12 +1491,18 @@ struct DownsampledArticleImage: View {
         do {
             var request = URLRequest(url: url, timeoutInterval: 20)
             request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-            // 部分 CDN（如 Sixth Tone / 国内图床）校验 Referer
+            // 部分 CDN 校验 Referer（Jetpack Photon / VC / Sixth Tone 等）
             if let host = url.host?.lowercased() {
                 if host.contains("sixthtone.com") {
                     request.setValue("https://www.sixthtone.com/", forHTTPHeaderField: "Referer")
                 } else if host.contains("expreview.com") {
                     request.setValue("https://www.expreview.com/", forHTTPHeaderField: "Referer")
+                } else if host.contains("visualcapitalist.com")
+                            || host.hasSuffix(".wp.com")
+                            || host == "wp.com"
+                            || host.contains("wordpress.com") {
+                    // Photon 图床用站点域作 Referer，避免热链拦截
+                    request.setValue("https://www.visualcapitalist.com/", forHTTPHeaderField: "Referer")
                 } else if let scheme = url.scheme {
                     request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
                 }
