@@ -17,6 +17,12 @@ class AppStore: AIService.Runtime {
     private var _feedSectionsCacheToken: Int = 0
     private var _feedSectionsSnapshot: [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] = []
 
+    /// article.id → feed.id（变更时维护，避免按 id 全库扫描）
+    private var articleIDToFeedID: [UUID: UUID] = [:]
+
+    /// 全文抓取 in-flight：canonical link → Task（AppStore 层，含前缀 URL 差异）
+    private var fullContentInflight: [String: Task<Article, Error>] = [:]
+
     /// 会话 UI 进度域（独立 @Observable）
     let chrome = SessionChromeState()
 
@@ -493,6 +499,37 @@ class AppStore: AIService.Runtime {
         return feeds[i].articles[j]
     }
 
+    /// 仅用 article.id：走辅助索引
+    func articleSnapshot(id: UUID) -> Article? {
+        guard let feedID = articleIDToFeedID[id] else {
+            // 索引未命中时重建一次再试
+            rebuildArticleIndex()
+            guard let feedID = articleIDToFeedID[id] else { return nil }
+            return articleSnapshot(id: id, feedID: feedID)
+        }
+        return articleSnapshot(id: id, feedID: feedID)
+    }
+
+    private func rebuildArticleIndex() {
+        var map: [UUID: UUID] = [:]
+        map.reserveCapacity(feeds.reduce(0) { $0 + $1.articles.count })
+        for f in feeds {
+            for a in f.articles {
+                map[a.id] = f.id
+            }
+        }
+        articleIDToFeedID = map
+    }
+
+    private func indexArticle(_ articleID: UUID, feedID: UUID) {
+        articleIDToFeedID[articleID] = feedID
+    }
+
+    private func recomputeUnreadCount(at feedIndex: Int) {
+        guard feeds.indices.contains(feedIndex) else { return }
+        feeds[feedIndex].unreadCount = feeds[feedIndex].articles.reduce(0) { $0 + ($1.isRead ? 0 : 1) }
+    }
+
     /// 超过此长度的正文/译文不进列表内存，只按 link 存 Offline cache
     private static let heavyBodyThreshold = 400
 
@@ -614,11 +651,31 @@ class AppStore: AIService.Runtime {
     func updateArticle(_ article: Article) {
         var article = article
         evacuateHeavyBodies(in: &article)
-        for i in feeds.indices {
-            if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
-                feeds[i].articles[j] = article
-                feeds[i].unreadCount = feeds[i].articles.filter { !$0.isRead }.count
-                articleFlags.bump(article.id)
+        // 优先索引定位
+        let feedID = articleIDToFeedID[article.id] ?? article.feedID
+        if let i = feeds.firstIndex(where: { $0.id == feedID }),
+           let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
+            let wasRead = feeds[i].articles[j].isRead
+            feeds[i].articles[j] = article
+            if wasRead != article.isRead {
+                feeds[i].unreadCount += article.isRead ? -1 : 1
+                feeds[i].unreadCount = max(0, feeds[i].unreadCount)
+            }
+            indexArticle(article.id, feedID: feeds[i].id)
+            articleFlags.bump(article.id)
+        } else {
+            for i in feeds.indices {
+                if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
+                    let wasRead = feeds[i].articles[j].isRead
+                    feeds[i].articles[j] = article
+                    if wasRead != article.isRead {
+                        feeds[i].unreadCount += article.isRead ? -1 : 1
+                        feeds[i].unreadCount = max(0, feeds[i].unreadCount)
+                    }
+                    indexArticle(article.id, feedID: feeds[i].id)
+                    articleFlags.bump(article.id)
+                    break
+                }
             }
         }
         saveToStorage()
@@ -1456,8 +1513,12 @@ class AppStore: AIService.Runtime {
             }
         }
         newArticles = newArticles.map { metadataOnly($0) }
+        let newUnread = newArticles.reduce(0) { $0 + ($1.isRead ? 0 : 1) }
         feeds[idx].articles.insert(contentsOf: newArticles, at: 0)
-        feeds[idx].unreadCount = feeds[idx].articles.filter { !$0.isRead }.count
+        feeds[idx].unreadCount += newUnread
+        for a in newArticles {
+            indexArticle(a.id, feedID: feeds[idx].id)
+        }
         feeds[idx].lastFetched = Date()
         // 仅解析/更新图标 URL，真正下载由 FeedIcon 负责（勿在此标记 faviconFetchDone）
         if let resolved = FeedParser.resolveFaviconURL(from: data, feedURL: urlStr) {
@@ -3050,40 +3111,61 @@ class AppStore: AIService.Runtime {
         guard isFullContentEnabled(for: article) else {
             throw TranslationError.apiError("该订阅源已关闭全文获取")
         }
-        // 读：统一按 link → offline cache
+        let linkKey = Self.canonicalLink(article.link)
+
+        // 读：统一按 link → offline cache（不触发无谓 update，避免阅读路径 body 失效）
         if let cached = OfflineCache.loadArticleBody(link: article.link), !cached.isEmpty,
            HTMLUtils.stripTags(cached).count >= 400 {
             var updated = article
             updated.content = cached
             updated.hasFullContent = true
-            // 列表侧不持正文
-            var stored = updated
-            stored.content = ""
-            stored.hasFullContent = true
-            updateArticle(stored)
+            if let i = feeds.firstIndex(where: { $0.id == article.feedID }),
+               let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }),
+               !feeds[i].articles[j].hasFullContent {
+                feeds[i].articles[j].hasFullContent = true
+                feeds[i].articles[j].content = ""
+                articleFlags.bump(article.id)
+                scheduleFeedsPersist()
+            }
             return updated
         }
         if article.hasFullContent, !article.content.isEmpty,
            HTMLUtils.stripTags(article.content).count >= 400 {
             OfflineCache.persistArticleBody(link: article.link, html: article.content)
-            var updated = article
             var stored = article
             stored.content = ""
-            updateArticle(stored)
-            return updated
+            // 仅清空列表侧正文，不整篇替换引发阅读重解析
+            if let i = feeds.firstIndex(where: { $0.id == article.feedID }),
+               let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
+                feeds[i].articles[j].content = ""
+                feeds[i].articles[j].hasFullContent = true
+            }
+            return article
         }
-        let fetchURL = fullContentFetchURL(for: article)
-        let result = try await ArticleContentFetcher.fetchFullContent(from: fetchURL)
-        // 写：统一按原始 article.link（不用前缀 URL）
-        OfflineCache.persistArticleBody(link: article.link, html: result.contentHTML)
-        var stored = article
-        stored.hasFullContent = true
-        stored.content = ""
-        updateArticle(stored)
-        var forReader = article
-        forReader.content = result.contentHTML
-        forReader.hasFullContent = true
-        return forReader
+
+        // in-flight 去重：同一文章 link 共享 Task
+        if let existing = fullContentInflight[linkKey] {
+            return try await existing.value
+        }
+        let task = Task<Article, Error> { @MainActor in
+            let fetchURL = self.fullContentFetchURL(for: article)
+            let result = try await ArticleContentFetcher.fetchFullContent(from: fetchURL)
+            OfflineCache.persistArticleBody(link: article.link, html: result.contentHTML)
+            if let i = self.feeds.firstIndex(where: { $0.id == article.feedID }),
+               let j = self.feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
+                self.feeds[i].articles[j].hasFullContent = true
+                self.feeds[i].articles[j].content = ""
+                self.articleFlags.bump(article.id)
+            }
+            self.scheduleFeedsPersist()
+            var forReader = article
+            forReader.content = result.contentHTML
+            forReader.hasFullContent = true
+            return forReader
+        }
+        fullContentInflight[linkKey] = task
+        defer { fullContentInflight[linkKey] = nil }
+        return try await task.value
     }
 
     func clearOfflineContentCache() { OfflineCache.clearContentCache() }
@@ -3409,6 +3491,7 @@ class AppStore: AIService.Runtime {
         loadReadLinks()
         loadFavoriteLinks()
         applyFlagLinksToFeeds()
+        rebuildArticleIndex()
         applyPersistedSettings(SettingsRepository.load())
         if let loaded = OfflineCache.loadChatConversations() {
             chatConversations = loaded.sorted { $0.updatedAt > $1.updatedAt }
