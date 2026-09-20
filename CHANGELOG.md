@@ -42,7 +42,7 @@
 - **搜索 / 评论 / 对话 / 添加订阅 / 设置**：对齐 tokens 与主题背景（`appFormChrome`）
 - **无障碍**：Dynamic Type（UIFontMetrics）；Reduce Motion；列表合并 VoiceOver 标签；约 44pt 点击区
 
-## [1.3-78] — 构建中（ui-redesign-experiment）
+## [1.3-78] — 构建成功 (build160 / Actions 35483862757) · 分支 ui-redesign-experiment
 
 相对：`v1.3-77` / build159
 
