@@ -699,6 +699,16 @@ enum ArticleContentFetcher {
                 "single-content",
                 "content-inner"
             ]
+        } else if host == "phys.org" || host.hasSuffix(".phys.org") {
+            // 正文在 article-main；整页 <article> 会带相关推荐与侧栏图
+            selectors = [
+                "article-main",
+                "article-main__news",
+                "news-article",
+                "article__text",
+                "article-content",
+                "main-news"
+            ]
         } else if host == "sspai.com" || host.hasSuffix(".sspai.com") {
             selectors = [
                 "article__main__content",
@@ -742,7 +752,43 @@ enum ArticleContentFetcher {
         if let best, host == "foreignaffairs.com" || host.hasSuffix(".foreignaffairs.com") {
             return sanitizeForeignAffairsBody(best)
         }
+        if let best, host == "phys.org" || host.hasSuffix(".phys.org") {
+            return sanitizePhysOrgBody(best)
+        }
+        if let best, host == "visualcapitalist.com" || host.hasSuffix(".visualcapitalist.com") {
+            return sanitizeVisualCapitalistBody(best)
+        }
         return bestLen >= 200 ? best : nil
+    }
+
+    /// Phys.org：去掉相关新闻、版权脚注、探索更多等正文外噪音
+    private static func sanitizePhysOrgBody(_ html: String) -> String {
+        var work = truncateArticleTail(html)
+        work = removeBlocksWithClassTokens(work, tokens: [
+            "article-main__more", "article-main__aside", "article-gallery",
+            "related-articles", "related-stories", "news-article__related",
+            "article-main__dt", "article-main__right", "social-buttons",
+            "article-main__low", "article-main__nav", "breadcrumbs",
+            "pro-note", "pro-cta", "newsletter", "ad-leaderboard",
+            "mobile-ad", "desktop-ad", "sidebar"
+        ])
+        // 「Explore further」「More information」「Citation」等之后截断
+        work = truncateArticleTail(work)
+        let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
+        return textLen >= 120 ? work : html
+    }
+
+    /// Visual Capitalist：去掉订阅/相关图表尾巴，并做图片去重前预处理
+    private static func sanitizeVisualCapitalistBody(_ html: String) -> String {
+        var work = truncateArticleTail(html)
+        work = removeBlocksWithClassTokens(work, tokens: [
+            "related-posts", "jp-relatedposts", "sharedaddy", "jetpack-share",
+            "newsletter", "subscribe", "vc-newsletter", "entry-related",
+            "wp-block-jetpack-subscriptions", "post-footer"
+        ])
+        work = truncateArticleTail(work)
+        let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
+        return textLen >= 80 ? work : html
     }
 
     /// Foreign Affairs：去掉订阅 CTA、JS 提示，保留段落正文
@@ -788,6 +834,15 @@ enum ArticleContentFetcher {
             "Sign up to our free newsletter",
             "If you found this post interesting",
             "Continue reading on the free Voronoi",
+            "Explore further",
+            "More information",
+            "Citation:",
+            "Provided by",
+            "This document is subject to copyright",
+            "Related Stories",
+            "Related articles",
+            "You might also like",
+            "Sign up for our newsletter",
             "class=\"comments\"",
             "id=\"comments\"",
             "class=\"related",
@@ -1042,9 +1097,151 @@ enum ArticleContentFetcher {
         work = promoteLazyAndSrcsetImages(work)
         work = absolutizeAttributes(work, attr: "src", baseURL: baseURL)
         work = absolutizeAttributes(work, attr: "href", baseURL: baseURL)
+        // 去掉模糊占位 / 同图清晰+模糊双份（Visual Capitalist 等）
+        work = dedupeArticleImages(work)
         work = HTMLUtils.decodeEntities(work)
         work = work.replacingOccurrences(of: #"\n{3,}"# , with: "\n\n", options: .regularExpression)
         return work.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 同一逻辑图只保留最高质量一张：去掉 LQIP/模糊占位与尺寸变体重复
+    private static func dedupeArticleImages(_ html: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: .caseInsensitive) else {
+            return html
+        }
+        let ns = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return html }
+
+        // 收集 (NSRange location, score, key, isPlaceholder)
+        var scored: [(loc: Int, len: Int, score: Int, key: String, placeholder: Bool)] = []
+        for m in matches {
+            let tag = ns.substring(with: m.range)
+            let src = imageSrc(from: tag) ?? ""
+            let key = imageDedupeKey(src)
+            let score = imageQualityScore(tag: tag, src: src)
+            let ph = isLowQualityPlaceholderImage(tag)
+            scored.append((m.range.location, m.range.length, score, key.isEmpty ? "loc-\(m.range.location)" : key, ph))
+        }
+
+        // 每 key 保留最高分且非强占位
+        var bestLoc: [String: Int] = [:]
+        var bestScore: [String: Int] = [:]
+        for item in scored {
+            if item.placeholder && item.score < 40 { continue }
+            if let prev = bestScore[item.key], prev >= item.score { continue }
+            bestScore[item.key] = item.score
+            bestLoc[item.key] = item.loc
+        }
+        let keepLocs = Set(bestLoc.values)
+
+        var result = html
+        for m in matches.reversed() {
+            let loc = m.range.location
+            guard let r = Range(m.range, in: result) else { continue }
+            let tag = String(result[r])
+            let shouldDrop = !keepLocs.contains(loc) || isLowQualityPlaceholderImage(tag)
+            if shouldDrop {
+                result.replaceSubrange(r, with: "")
+            }
+        }
+        return result
+    }
+
+    private static func imageSrc(from tag: String) -> String? {
+        let pat = #"src=[\"']([^\"']+)[\"']"#
+        guard let re = try? NSRegularExpression(pattern: pat, options: .caseInsensitive) else { return nil }
+        let ns = tag as NSString
+        guard let m = re.firstMatch(in: tag, range: NSRange(location: 0, length: ns.length)),
+              m.numberOfRanges >= 2,
+              let r = Range(m.range(at: 1), in: tag) else { return nil }
+        return String(tag[r])
+    }
+
+    private static func imageSrcs(in html: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: .caseInsensitive) else { return [] }
+        let ns = html as NSString
+        return re.matches(in: html, range: NSRange(location: 0, length: ns.length)).compactMap { m in
+            imageSrc(from: ns.substring(with: m.range))
+        }
+    }
+
+    /// 归一化后用于判重：去 query、去 WP 尺寸后缀 -300x200 / -scaled
+    private static func imageDedupeKey(_ src: String) -> String {
+        guard var url = URL(string: src) else {
+            return src.lowercased()
+        }
+        // 去掉尺寸相关 query
+        if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            comps.query = nil
+            comps.fragment = nil
+            if let u = comps.url { url = u }
+        }
+        var path = url.path.lowercased()
+        path = path.replacingOccurrences(
+            of: #"-\d{2,4}x\d{2,4}(?=\.)"#,
+            with: "",
+            options: .regularExpression
+        )
+        path = path.replacingOccurrences(of: "-scaled", with: "")
+        path = path.replacingOccurrences(of: "-rotated", with: "")
+        return (url.host?.lowercased() ?? "") + path
+    }
+
+    private static func imageQualityScore(tag: String, src: String) -> Int {
+        var score = 50
+        let lower = src.lowercased()
+        let tagLower = tag.lowercased()
+        if lower.contains("blur") || lower.contains("lqip") || lower.contains("placeholder") { score -= 40 }
+        if lower.contains("data:image") { score -= 50 }
+        if lower.contains("/thumb") || lower.contains("_thumb") { score -= 20 }
+        // WP 尺寸后缀
+        if let re = try? NSRegularExpression(pattern: #"-(\d{2,4})x(\d{2,4})\."#, options: []),
+           let m = re.firstMatch(in: src, range: NSRange(location: 0, length: (src as NSString).length)),
+           m.numberOfRanges >= 3 {
+            let ns = src as NSString
+            let w = Int(ns.substring(with: m.range(at: 1))) ?? 0
+            score += min(w / 20, 40)
+        } else {
+            score += 25 // 无尺寸后缀通常是原图
+        }
+        if let w = Int(matchFirst(#"width=[\"'](\d+)"#, in: tag) ?? ""), w > 0 {
+            score += min(w / 30, 30)
+        }
+        if tagLower.contains("srcset") { score += 5 }
+        if lower.contains("?w=") || lower.contains("&w=") {
+            if let wStr = matchFirst(#"[?&]w=(\d+)"#, in: src), let w = Int(wStr) {
+                score += min(w / 30, 30)
+                if w <= 40 { score -= 35 }
+            }
+        }
+        return score
+    }
+
+    private static func isLowQualityPlaceholderImage(_ tag: String) -> Bool {
+        let lower = tag.lowercased()
+        if lower.contains("data:image") { return true }
+        if lower.contains("placeholder") || lower.contains("lqip") { return true }
+        if lower.contains("blur") && (lower.contains("thumb") || lower.contains("preview")) { return true }
+        if let src = imageSrc(from: tag)?.lowercased() {
+            if src.contains("1x1") || src.contains("blank.gif") || src.contains("pixel") { return true }
+            if src.contains("blur") || src.contains("lqip") { return true }
+            if let wStr = matchFirst(#"[?&]w=(\d+)"#, in: src), let w = Int(wStr), w <= 48 {
+                return true
+            }
+            // 极小 WP 缩略图
+            if let re = try? NSRegularExpression(pattern: #"-(\d{2,3})x(\d{2,3})\."#, options: []),
+               let m = re.firstMatch(in: src, range: NSRange(location: 0, length: (src as NSString).length)),
+               m.numberOfRanges >= 3 {
+                let ns = src as NSString
+                let w = Int(ns.substring(with: m.range(at: 1))) ?? 999
+                let h = Int(ns.substring(with: m.range(at: 2))) ?? 999
+                if w <= 80 || h <= 80 { return true }
+            }
+        }
+        if let w = Int(matchFirst(#"width=[\"'](\d+)"#, in: tag) ?? ""), w > 0, w <= 8 { return true }
+        if let h = Int(matchFirst(#"height=[\"'](\d+)"#, in: tag) ?? ""), h > 0, h <= 8 { return true }
+        return false
     }
 
     /// 删除 class 含指定 token 的 div/section/aside 块（平衡标签）
@@ -1149,18 +1346,22 @@ enum ArticleContentFetcher {
                 }
                 return nil
             }()
-            // 特色图 / Jetpack 图：图表站正文常依赖首图
+            // 特色图 / Jetpack 图：图表站正文常依赖首图（若正文已有同图尺寸变体则不重复插入）
             if let featured = featuredImageURL(fromWordPress: obj) {
-                let lower = contentHTML.lowercased()
-                let featuredKey = featured.split(separator: "?").first.map(String.init) ?? featured
-                if !lower.contains(featuredKey.lowercased()) {
+                let featuredKey = imageDedupeKey(featured)
+                let existingKeys = imageSrcs(in: contentHTML).map { imageDedupeKey($0) }
+                if featuredKey.isEmpty || !existingKeys.contains(featuredKey) {
                     contentHTML = "<p><img src=\"" + featured + "\" alt=\"\"></p>\n" + contentHTML
                 }
             }
             // 正文里再扫一遍 figure/img 懒加载字段
             contentHTML = promoteLazyAndSrcsetImages(contentHTML)
             guard !contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            let cleaned = cleanContentHTML(contentHTML, baseURL: pageURL)
+            var cleaned = cleanContentHTML(contentHTML, baseURL: pageURL)
+            if isWordPressChartHost(pageURL.host) {
+                cleaned = sanitizeVisualCapitalistBody(cleaned)
+                cleaned = dedupeArticleImages(cleaned)
+            }
             let len = HTMLUtils.stripTags(cleaned).count
             let imgCount = cleaned.lowercased().components(separatedBy: "<img").count - 1
             // 图表文：允许正文偏短但有图
@@ -1233,12 +1434,12 @@ enum ArticleContentFetcher {
             return String(tag[r])
         }
         let existingSrc = attr("src")
-        let candidates = [
-            attr("data-src"),
-            attr("data-lazy-src"),
-            attr("data-original"),
+        let rawCandidates = [
             attr("data-full-url"),
             attr("data-large_image"),
+            attr("data-original"),
+            attr("data-src"),
+            attr("data-lazy-src"),
             attr("data-url"),
             attr("data-lazy-srcset").flatMap { bestURLFromSrcset($0) },
             bestURLFromSrcset(attr("data-srcset")),
@@ -1246,10 +1447,15 @@ enum ArticleContentFetcher {
             existingSrc
         ].compactMap { $0 }.filter { !$0.isEmpty && !$0.hasPrefix("data:") }
 
+        // 优先清晰大图：按质量分排序，避免 blur/LQIP 占第一位
+        let candidates = rawCandidates.sorted { a, b in
+            imageQualityScore(tag: tag, src: a) > imageQualityScore(tag: tag, src: b)
+        }
+
         // 现有 src 若是 1x1 / placeholder，优先换掉
         let srcIsPlaceholder: Bool = {
             guard let s = existingSrc?.lowercased() else { return true }
-            if s.contains("placeholder") || s.contains("data:image") { return true }
+            if s.contains("placeholder") || s.contains("data:image") || s.contains("blur") || s.contains("lqip") { return true }
             if s.contains("1x1") || s.contains("blank.gif") || s.contains("pixel") { return true }
             return false
         }()
