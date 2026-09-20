@@ -139,8 +139,8 @@ struct ArticleReaderView: View {
                         }
                     }
 
-                    // Metadata — lowest weight
-                    HStack(spacing: AppSpacing.xs) {
+                    // Metadata — 时间 / 全文 左对齐，译文来源靠右
+                    HStack(alignment: .center, spacing: AppSpacing.xs) {
                         if !currentArticle.relativeTime.isEmpty {
                             Text(currentArticle.relativeTime)
                                 .font(AppTypography.articleMeta(size: max(12, store.readerTitleFontSize - 12)))
@@ -158,6 +158,18 @@ struct ArticleReaderView: View {
                             Text("仅摘要")
                                 .font(AppTypography.articleMeta(size: max(11, store.readerTitleFontSize - 13)))
                                 .foregroundStyle(.orange)
+                        }
+                        Spacer(minLength: AppSpacing.sm)
+                        if showTranslated,
+                           let engineName = currentArticle.translationEngineName?
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+                           !engineName.isEmpty {
+                            Label(engineName, systemImage: "translate")
+                                .font(AppTypography.articleMeta(size: max(11, store.readerTitleFontSize - 13)))
+                                .foregroundStyle(theme.muted)
+                                .labelStyle(.titleAndIcon)
+                                .lineLimit(1)
+                                .accessibilityLabel("译文来源 \(engineName)")
                         }
                     }
                 }
@@ -214,19 +226,6 @@ struct ArticleReaderView: View {
                         .padding(.horizontal, AppLayout.readingHorizontalPadding)
                         .padding(.top, AppSpacing.xs)
                         .readingColumn()
-                }
-                if showTranslated,
-                   let engineName = currentArticle.translationEngineName?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                   !engineName.isEmpty {
-                    Label("译文来源：\(engineName)", systemImage: "translate")
-                        .font(AppTypography.caption())
-                        .fontWeight(.medium)
-                        .foregroundStyle(theme.muted)
-                        .padding(.horizontal, AppLayout.readingHorizontalPadding)
-                        .padding(.top, AppSpacing.xs)
-                        .readingColumn()
-                        .accessibilityLabel("译文来源 \(engineName)")
                 }
                 if let hint = fullContentHint {
                     Text(hint)
