@@ -16,6 +16,9 @@ class AppStore: AIService.Runtime {
     /// 会话 UI 进度域（独立 @Observable）
     let chrome = SessionChromeState()
 
+    /// 文章级世代（已读/收藏/单篇更新）
+    let articleFlags = ArticleFlagsIndex()
+
     /// 用户偏好 / 引擎配置域（独立 @Observable）
     let settings = SettingsStore()
 
@@ -431,6 +434,13 @@ class AppStore: AIService.Runtime {
         feeds.first(where: { $0.id == feedID })?.articles ?? []
     }
 
+    /// 单篇快照（按 feed 定位，避免 allArticles flatMap）
+    func articleSnapshot(id: UUID, feedID: UUID) -> Article? {
+        guard let i = feeds.firstIndex(where: { $0.id == feedID }),
+              let j = feeds[i].articles.firstIndex(where: { $0.id == id }) else { return nil }
+        return feeds[i].articles[j]
+    }
+
     /// 正文/译文超过此长度则仅保留磁盘，内存中清空以降低常驻 RSS
     private static let heavyBodyThreshold = 1_200
 
@@ -475,9 +485,10 @@ class AppStore: AIService.Runtime {
         for i in feeds.indices {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
                 if !feeds[i].articles[j].isRead {
-                    // 就地改字段 + unreadCount；不整源 feeds[i]= 赋值，缩小 Observation 失效面
+                    // 就地改字段 + unreadCount；不整源 feeds[i]= 赋值
                     feeds[i].articles[j].isRead = true
                     feeds[i].unreadCount = max(0, feeds[i].unreadCount - 1)
+                    articleFlags.bump(feeds[i].articles[j].id)
                     articleFlagsEpoch &+= 1
                 }
                 rememberReadLink(feeds[i].articles[j].link)
@@ -492,6 +503,7 @@ class AppStore: AIService.Runtime {
                 if feeds[i].articles[j].isRead {
                     feeds[i].articles[j].isRead = false
                     feeds[i].unreadCount += 1
+                    articleFlags.bump(feeds[i].articles[j].id)
                     articleFlagsEpoch &+= 1
                 }
                 forgetReadLink(feeds[i].articles[j].link)
@@ -510,6 +522,7 @@ class AppStore: AIService.Runtime {
         }
         if changed {
             feeds[i].unreadCount = 0
+            articleFlags.bumpAll(feeds[i].articles.map(\.id))
             articleFlagsEpoch &+= 1
             scheduleFeedsPersist()
         }
@@ -523,6 +536,7 @@ class AppStore: AIService.Runtime {
                 if willFavorite {
                     boostInterest(from: feeds[i].articles[j])
                 }
+                articleFlags.bump(feeds[i].articles[j].id)
                 articleFlagsEpoch &+= 1
             }
         }
@@ -538,6 +552,7 @@ class AppStore: AIService.Runtime {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
                 feeds[i].articles[j] = article
                 feeds[i].unreadCount = feeds[i].articles.filter { !$0.isRead }.count
+                articleFlags.bump(article.id)
             }
         }
         saveToStorage()

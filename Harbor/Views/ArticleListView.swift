@@ -597,8 +597,8 @@ struct FeaturedArticleRow: View {
     let showTranslation: Bool
 
     private var live: Article {
-        let list = store.articlesForFeed(article.feedID)
-        return list.first(where: { $0.id == article.id }) ?? article
+        let _ = store.articleFlags.generation(of: article.id)
+        return store.articleSnapshot(id: article.id, feedID: article.feedID) ?? article
     }
 
     private var displayTitle: String {
@@ -708,10 +708,10 @@ struct ArticleRow: View {
     /// 收藏页等场景：始终使用未读样式（强调色）
     var preferUnreadStyle: Bool = false
 
-    /// 优先用 ForEach 传入的最新 article；仅在同 feed 内轻量回查（避免全库 flatMap）
+    /// 依赖本篇 generation + 同 feed 快照（不 flatMap 全库）
     private var live: Article {
-        let list = store.articlesForFeed(article.feedID)
-        return list.first(where: { $0.id == article.id }) ?? article
+        let _ = store.articleFlags.generation(of: article.id)
+        return store.articleSnapshot(id: article.id, feedID: article.feedID) ?? article
     }
 
     private var displayTitle: String {
