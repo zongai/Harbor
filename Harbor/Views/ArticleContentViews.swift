@@ -113,6 +113,8 @@ struct ArticleContentView: View {
                 DownsampledArticleImage(url: url)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, AppSpacing.sm)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint("轻点全屏查看")
             }
         case .table(let headers, let rows):
             ArticleTableView(
@@ -121,6 +123,7 @@ struct ArticleContentView: View {
                 fontSize: fontSize,
                 suppressArticleSwipe: suppressArticleSwipe
             )
+            .padding(.vertical, AppSpacing.sm)
         case .code(let source):
             ArticleCodeBlockView(source: source, fontSize: fontSize)
         }
@@ -1439,41 +1442,72 @@ struct ArticleTableView: View {
         max(headers.count, rows.map(\.count).max() ?? 0, 1)
     }
 
+    /// 按列内容估宽，窄列不浪费、宽列可读
+    private func columnMinWidth(_ index: Int) -> CGFloat {
+        var samples: [String] = []
+        if index < headers.count { samples.append(headers[index]) }
+        for row in rows.prefix(12) {
+            if index < row.count { samples.append(row[index]) }
+        }
+        let maxChars = samples.map(\.count).max() ?? 4
+        // 中文偏宽：约 0.95em；英文数字约 0.55em
+        let unit = max(11.0, fontSize - 1) * 0.62
+        let estimated = CGFloat(maxChars) * unit + 24
+        return min(280, max(72, estimated))
+    }
+
+    private var cellFontSize: CGFloat { max(12, fontSize - 1) }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 0) {
                 if !headers.isEmpty {
-                    HStack(alignment: .top, spacing: 0) {
+                    HStack(alignment: .center, spacing: 0) {
                         ForEach(0..<columnCount, id: \.self) { i in
-                            Text(i < headers.count ? headers[i] : "")
-                                .font(.system(size: max(12, fontSize - 1), weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .frame(minWidth: 88, maxWidth: 220, alignment: .leading)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
+                            tableCell(
+                                text: i < headers.count ? headers[i] : "",
+                                bold: true,
+                                width: columnMinWidth(i),
+                                isLastColumn: i == columnCount - 1
+                            )
                         }
                     }
-                    .background(Color(.secondarySystemBackground))
+                    .background(Color(.tertiarySystemFill))
+                    .overlay(alignment: .bottom) {
+                        Rectangle()
+                            .fill(Color(.separator).opacity(0.85))
+                            .frame(height: 1)
+                    }
                 }
                 ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
                     HStack(alignment: .top, spacing: 0) {
                         ForEach(0..<columnCount, id: \.self) { i in
-                            Text(i < row.count ? row[i] : "")
-                                .font(.system(size: max(12, fontSize - 1)))
-                                .foregroundStyle(.primary)
-                                .frame(minWidth: 88, maxWidth: 220, alignment: .leading)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 7)
+                            tableCell(
+                                text: i < row.count ? row[i] : "",
+                                bold: false,
+                                width: columnMinWidth(i),
+                                isLastColumn: i == columnCount - 1
+                            )
                         }
                     }
-                    .background(idx % 2 == 0 ? Color.clear : Color(.secondarySystemBackground).opacity(0.45))
+                    .background(idx % 2 == 0
+                                ? Color(.secondarySystemBackground).opacity(0.35)
+                                : Color(.tertiarySystemBackground).opacity(0.55))
+                    .overlay(alignment: .bottom) {
+                        if idx < rows.count - 1 {
+                            Rectangle()
+                                .fill(Color(.separator).opacity(0.35))
+                                .frame(height: 0.5)
+                        }
+                    }
                 }
             }
+            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
-                    .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
+                    .stroke(Color(.separator).opacity(0.7), lineWidth: 0.8)
             )
-            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+            .shadow(color: Color.black.opacity(0.06), radius: 4, y: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // 横向拖动表格时暂时屏蔽阅读页换篇手势
@@ -1487,25 +1521,45 @@ struct ArticleTableView: View {
                     }
                 }
                 .onEnded { _ in
-                    // 略延迟，避免与父级 onEnded 竞态导致仍触发换篇
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         suppressArticleSwipe.wrappedValue = false
                     }
                 }
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("数据表")
+        .accessibilityLabel("数据表，\(rows.count) 行")
+    }
+
+    @ViewBuilder
+    private func tableCell(text: String, bold: Bool, width: CGFloat, isLastColumn: Bool) -> some View {
+        Text(text)
+            .font(.system(size: cellFontSize, weight: bold ? .semibold : .regular))
+            .foregroundStyle(bold ? Color.primary : Color.primary.opacity(0.92))
+            .multilineTextAlignment(.leading)
+            .lineLimit(6)
+            .frame(minWidth: width, idealWidth: width, maxWidth: min(width * 1.35, 300), alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, bold ? 10 : 9)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+            .overlay(alignment: .trailing) {
+                if !isLastColumn {
+                    Rectangle()
+                        .fill(Color(.separator).opacity(0.4))
+                        .frame(width: 0.5)
+                }
+            }
     }
 }
 
 
-// MARK: - 阅读页配图（降采样）
+// MARK: - 阅读页配图（降采样）+ 全屏
 
 struct DownsampledArticleImage: View {
     let url: URL
     @State private var image: UIImage?
     @State private var loadFailed = false
     @State private var isLoading = true
+    @State private var showFullscreen = false
     /// 阅读栏宽约屏宽，按 2× 屏宽像素上限解码
     private var maxPixel: CGFloat {
         ImageDownsampling.articleMaxPixel()
@@ -1518,6 +1572,17 @@ struct DownsampledArticleImage: View {
                     .resizable()
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+                    .onTapGesture { showFullscreen = true }
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(6)
+                            .background(.black.opacity(0.45), in: Circle())
+                            .padding(8)
+                            .allowsHitTesting(false)
+                    }
             } else if isLoading {
                 RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
                     .fill(Color.secondary.opacity(0.12))
@@ -1542,6 +1607,9 @@ struct DownsampledArticleImage: View {
                         Task { await load() }
                     }
             }
+        }
+        .fullScreenCover(isPresented: $showFullscreen) {
+            FullscreenImageViewer(image: image, url: url)
         }
         .task(id: url.absoluteString) {
             await load()
@@ -1644,5 +1712,168 @@ struct DownsampledArticleImage: View {
         } catch {
             return nil
         }
+    }
+}
+
+// MARK: - 全屏看图（双指缩放 + 拖动 + 双击复位）
+
+struct FullscreenImageViewer: View {
+    let image: UIImage?
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var displayImage: UIImage?
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let ui = displayImage ?? image {
+                Image(uiImage: ui)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .offset(offset)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let next = lastScale * value
+                                scale = min(4, max(1, next))
+                            }
+                            .onEnded { _ in
+                                lastScale = scale
+                                if scale <= 1.01 {
+                                    withAnimation(.easeOut(duration: 0.2)) {
+                                        scale = 1
+                                        lastScale = 1
+                                        offset = .zero
+                                        lastOffset = .zero
+                                    }
+                                }
+                            }
+                            .simultaneously(with:
+                                DragGesture()
+                                    .onChanged { value in
+                                        guard scale > 1.01 else { return }
+                                        offset = CGSize(
+                                            width: lastOffset.width + value.translation.width,
+                                            height: lastOffset.height + value.translation.height
+                                        )
+                                    }
+                                    .onEnded { _ in
+                                        lastOffset = offset
+                                    }
+                            )
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            if scale > 1.05 {
+                                scale = 1
+                                lastScale = 1
+                                offset = .zero
+                                lastOffset = .zero
+                            } else {
+                                scale = 2
+                                lastScale = 2
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView()
+                    .tint(.white)
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .white.opacity(0.28))
+                    }
+                    .buttonStyle(.plain)
+                    .padding()
+                    .accessibilityLabel("关闭")
+                }
+                Spacer()
+                Text("双指缩放 · 双击放大")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .padding(.bottom, 20)
+            }
+        }
+        .statusBarHidden(true)
+        .task {
+            if displayImage == nil {
+                displayImage = image
+            }
+            // 全屏尝试更高分辨率
+            if let hi = await loadHigherRes() {
+                displayImage = hi
+            }
+        }
+    }
+
+    private func loadHigherRes() async -> UIImage? {
+        let maxPx = max(ImageDownsampling.articleMaxPixel() * 1.8, 1600)
+        let candidates = DownsampledArticleImageCandidates.urls(for: url)
+        for candidate in candidates {
+            let key = candidate.absoluteString + "|hi"
+            if let data = OfflineCache.loadImage(url: key),
+               let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPx) ?? UIImage(data: data) {
+                return ui
+            }
+            do {
+                var request = URLRequest(url: candidate, timeoutInterval: 25)
+                request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+                if let host = candidate.host?.lowercased(),
+                   host.contains("visualcapitalist") || host.hasSuffix(".wp.com") {
+                    request.setValue("https://www.visualcapitalist.com/", forHTTPHeaderField: "Referer")
+                }
+                let (data, response) = try await URLSession.shared.data(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    continue
+                }
+                guard !data.isEmpty else { continue }
+                OfflineCache.saveImage(url: key, data: data)
+                if let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPx) ?? UIImage(data: data) {
+                    return ui
+                }
+            } catch { continue }
+        }
+        return nil
+    }
+}
+
+/// 与 DownsampledArticleImage 共享候选 URL 逻辑（全屏高清复用）
+enum DownsampledArticleImageCandidates {
+    static func urls(for url: URL) -> [URL] {
+        var list: [URL] = [url]
+        let s = url.absoluteString
+        if let host = url.host?.lowercased(), host.hasSuffix(".wp.com") || host == "wp.com" {
+            var path = url.path
+            if path.hasPrefix("/") { path = String(path.dropFirst()) }
+            if path.contains("wp-content/") || path.contains(".") {
+                if let origin = URL(string: "https://\(path)") { list.append(origin) }
+            }
+        }
+        if let host = url.host?.lowercased(),
+           host.contains("visualcapitalist.com"),
+           !host.hasSuffix(".wp.com") {
+            let stripped = s.replacingOccurrences(of: "https://", with: "")
+                .replacingOccurrences(of: "http://", with: "")
+            if let photon = URL(string: "https://i0.wp.com/\(stripped)") {
+                list.append(photon)
+            }
+        }
+        var seen = Set<String>()
+        return list.filter { seen.insert($0.absoluteString).inserted }
     }
 }
