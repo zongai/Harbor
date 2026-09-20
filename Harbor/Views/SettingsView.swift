@@ -20,22 +20,42 @@ struct SettingsView: View {
     @State private var showImportConfirm = false
     @State private var pendingImportData: Data?
 
+    @State private var showOPMLImport = false
+    @State private var showOPMLExport = false
+    @State private var opmlExportURL: URL?
+    @State private var dataIOMessage: String?
+
     var body: some View {
         @Bindable var store = store
         NavigationStack {
             Form {
-                // MARK: 显示模式
+                // MARK: 账号
                 Section {
-                    Toggle(isOn: $showAdvancedSettings) {
-                        Label(
-                            showAdvancedSettings ? "高级选项：已开启" : "显示高级选项",
-                            systemImage: showAdvancedSettings ? "slider.horizontal.3" : "line.3.horizontal.decrease.circle"
-                        )
+                    Toggle(isOn: Binding(
+                        get: { store.iCloudSyncEnabled },
+                        set: { store.iCloudSyncEnabled = $0 }
+                    )) {
+                        Label("云同步", systemImage: "icloud")
                     }
+                    if store.iCloudSyncEnabled {
+                        HStack {
+                            Text("同步状态")
+                            Spacer()
+                            Text(store.iCloudLastSyncText.isEmpty ? "—" : store.iCloudLastSyncText)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        Button {
+                            store.syncICloudNow()
+                        } label: {
+                            Label("立即同步", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                } header: {
+                    Text("账号")
                 } footer: {
-                    Text(showAdvancedSettings
-                          ? "已显示：文章黑名单、已读保留天数、全文缓存策略、URL 前缀、设置导入导出等。"
-                          : "默认只显示常用设置。打开后可管理黑名单、缓存策略与备份。")
+                    Text("同步订阅源、分组与设置到同一 Apple ID 的其它设备。正文在换机后刷新即可重新获取。API Key 经 iCloud 钥匙串同步。")
                 }
 
                 // MARK: 阅读
@@ -45,46 +65,15 @@ struct SettingsView: View {
                             Text(mode.rawValue).tag(mode)
                         }
                     }
-                    Toggle("显示已读文章", isOn: $store.showReadArticles)
-                    Picker("订阅源排序", selection: $store.feedSortMode) {
-                        ForEach(FeedSortMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .onChange(of: store.feedSortMode) { _, _ in store.persistSettings() }
-                } header: {
-                    Text("阅读")
-                } footer: {
-                    Text("控制列表标题语言、已读是否出现在订阅/文章列表，以及源的排序方式。")
-                }
-
-                // MARK: 外观
-                Section {
-                    Picker("外观", selection: $store.appearanceMode) {
-                        ForEach(AppearanceMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: store.appearanceMode) { _, _ in store.persistSettings() }
-
-                    NavigationLink {
-                        Form {
-                            ThemePalettePicker(selection: $store.colorTheme)
-                                .onChange(of: store.colorTheme) { _, _ in store.persistSettings() }
-                        }
-                        .navigationTitle("阅读主题")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .appScreenBackground()
-                    } label: {
+                    NavigationLink(destination: FontSettingsView()) {
                         HStack {
-                            Text("阅读主题")
+                            Text("字体大小")
                             Spacer()
-                            Text(store.colorTheme.displayName)
+                            Text("分组 / 列表 / 阅读")
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                     }
-
                     NavigationLink {
                         Form {
                             ForEach(AppFontFamily.allCases) { family in
@@ -122,37 +111,81 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-
-                    NavigationLink(destination: FontSettingsView()) {
+                    NavigationLink {
+                        Form {
+                            ThemePalettePicker(selection: $store.colorTheme)
+                                .onChange(of: store.colorTheme) { _, _ in store.persistSettings() }
+                        }
+                        .navigationTitle("阅读主题")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .appScreenBackground()
+                    } label: {
                         HStack {
-                            Text("字号")
+                            Text("阅读主题")
                             Spacer()
-                            Text("分组 / 列表 / 阅读")
-                                .font(.footnote)
+                            Text(store.colorTheme.displayName)
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    Picker("深色模式", selection: $store.appearanceMode) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .onChange(of: store.appearanceMode) { _, _ in store.persistSettings() }
+
+                    Picker("朗读音色", selection: $store.ttsVoice) {
+                        Text("自动（按语言）").tag("")
+                        ForEach(EdgeTTS.popularVoices, id: \.id) { v in
+                            Text(v.name).tag(v.id)
+                        }
+                    }
+                    .onChange(of: store.ttsVoice) { _, _ in store.persistSettings() }
+                    HStack {
+                        Text("朗读语速")
+                        Spacer()
+                        Text(ttsRateLabel)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: $store.ttsRate, in: 0.5...2.0, step: 0.05)
+                        .onChange(of: store.ttsRate) { _, _ in store.persistSettings() }
                 } header: {
-                    Text("外观")
+                    Text("阅读")
                 } footer: {
-                    Text("外观可跟随系统深色模式；主题与字体影响全局界面与阅读页。")
+                    Text("字号随系统「更大字体」缩放。行距随正文字号自动调整。朗读使用 Edge 在线语音，无需 API Key。")
                 }
 
-                // MARK: 翻译与 AI
+                // MARK: 订阅
                 Section {
+                    Toggle("显示已读文章", isOn: $store.showReadArticles)
+                    Picker("默认排序", selection: $store.feedSortMode) {
+                        ForEach(FeedSortMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .onChange(of: store.feedSortMode) { _, _ in store.persistSettings() }
+                } header: {
+                    Text("订阅")
+                } footer: {
+                    Text("源的添加、分组与刷新在「订阅」页。排序影响订阅列表顺序。")
+                }
+
+                // MARK: AI
+                Section {
+                    NavigationLink(destination: AISettingsView()) {
+                        HStack {
+                            Text("AI 服务")
+                            Spacer()
+                            Text("\(store.aiProviders.count) 个 Provider")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     NavigationLink(destination: TranslationSettingsView()) {
                         HStack {
                             Text("翻译")
                             Spacer()
                             Text(store.targetLanguage.displayName)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    NavigationLink(destination: AISettingsView()) {
-                        HStack {
-                            Text("AI")
-                            Spacer()
-                            Text("\(store.aiProviders.count) 个 Provider")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -169,50 +202,15 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("翻译与 AI")
+                    Text("AI")
                 } footer: {
-                    Text(showAdvancedSettings
-                          ? "翻译目标语言、引擎与 Key 在「翻译」；模型、Prompt、AI 黑名单在「AI」。文章黑名单命中后自动标已读。"
-                          : "常用：设置翻译语言与一键翻译引擎。更多 AI / 黑名单请打开上方「显示高级选项」，或点右上角「高级」。")
+                    Text("自动摘要 / 自动翻译可在各订阅源中单独开关。翻译目标语言与引擎链在「翻译」中配置。")
                 }
 
-                // MARK: 朗读
-                Section {
-                    Picker("默认音色", selection: $store.ttsVoice) {
-                        Text("自动（按语言）").tag("")
-                        ForEach(EdgeTTS.popularVoices, id: \.id) { v in
-                            Text(v.name).tag(v.id)
-                        }
-                    }
-                    .onChange(of: store.ttsVoice) { _, _ in store.persistSettings() }
-
-                    HStack {
-                        Text("语速")
-                        Spacer()
-                        Text(ttsRateLabel)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: $store.ttsRate, in: 0.5...2.0, step: 0.05)
-                        .onChange(of: store.ttsRate) { _, _ in store.persistSettings() }
-                    HStack {
-                        Text("0.5×").font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        Text("1.0×").font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        Text("2.0×").font(.caption2).foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("朗读")
-                } footer: {
-                    Text("使用 Microsoft Edge 在线语音，无需 API Key。语速在合成时生效，切换后需重新点朗读。")
-                }
-
-
-                // MARK: 缓存（始终可见）
+                // MARK: 数据
                 Section {
                     HStack {
-                        Label("内容缓存", systemImage: "internaldrive")
+                        Label("缓存占用", systemImage: "internaldrive")
                         Spacer()
                         Text(cacheSizeText).foregroundStyle(.secondary)
                     }
@@ -224,122 +222,102 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    Button {
+                        showOPMLImport = true
+                    } label: {
+                        Label("导入 OPML", systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        prepareOPMLExport()
+                    } label: {
+                        Label("导出 OPML", systemImage: "square.and.arrow.up")
+                    }
                     Button(role: .destructive) {
                         Task {
                             await store.clearOfflineContentCacheAsync()
                             cacheSizeText = store.cacheSizeDescription()
                         }
                     } label: {
-                        Label("清除离线缓存", systemImage: "trash")
+                        Label("清除缓存", systemImage: "trash")
                     }
                     .disabled(store.isClearingCache)
+                    if let dataIOMessage {
+                        Text(dataIOMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 } header: {
-                    Text("缓存")
+                    Text("数据")
                 } footer: {
-                    Text("只清除全文、Feed 快照与正文图片；订阅与已读状态保留。更多保留天数等选项请打开「显示高级选项」。")
+                    Text("清除缓存只删除全文、Feed 快照与图片；订阅与已读保留。OPML 用于订阅源迁移。")
                 }
                 .onAppear { cacheSizeText = store.cacheSizeDescription() }
 
                 if showAdvancedSettings {
-                // MARK: 数据与清理
-                Section {
-                    Stepper(value: $store.readRetentionDays, in: 0...365) {
-                        if store.readRetentionDays == 0 {
-                            Text("已读保留：关闭自动清理")
-                        } else {
-                            Text("已读保留 \(store.readRetentionDays) 天")
-                        }
-                    }
-                    .onChange(of: store.readRetentionDays) { _, _ in
-                        store.persistSettings()
-                        store.purgeOldReadArticles()
-                    }
-                    Stepper(value: $store.fullContentCacheDays, in: 0...365) {
-                        if store.fullContentCacheDays == 0 {
-                            Text("全文缓存：不按时间清理")
-                        } else {
-                            Text("全文缓存 \(store.fullContentCacheDays) 天")
-                        }
-                    }
-                    .onChange(of: store.fullContentCacheDays) { _, _ in
-                        store.persistSettings()
-                        store.pruneFullContentCache()
-                    }
-                    Toggle(isOn: $store.fullContentURLPrefixEnabled) {
-                        Label("全文 URL 前缀", systemImage: "link.badge.plus")
-                    }
-                    .onChange(of: store.fullContentURLPrefixEnabled) { _, _ in
-                        store.persistSettings()
-                    }
-                    if store.fullContentURLPrefixEnabled {
-                        TextField("前缀，如 https://archive.is/", text: $store.fullContentURLPrefix)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .onChange(of: store.fullContentURLPrefix) { _, _ in
-                                store.persistSettings()
+                    Section {
+                        Stepper(value: $store.readRetentionDays, in: 0...365) {
+                            if store.readRetentionDays == 0 {
+                                Text("已读保留：关闭自动清理")
+                            } else {
+                                Text("已读保留 \(store.readRetentionDays) 天")
                             }
-                    }
-                } header: {
-                    Text("数据与清理")
-                } footer: {
-                    Text("已读保留与全文缓存天数、URL 前缀等。清除缓存入口在上方「缓存」分区。")
-                }
-
-                // MARK: iCloud
-                Section {
-                    Toggle(isOn: Binding(
-                        get: { store.iCloudSyncEnabled },
-                        set: { store.iCloudSyncEnabled = $0 }
-                    )) {
-                        Label("iCloud 同步", systemImage: "icloud")
-                    }
-                    if store.iCloudSyncEnabled {
-                        if !store.iCloudLastSyncText.isEmpty {
-                            Text(store.iCloudLastSyncText)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
                         }
+                        .onChange(of: store.readRetentionDays) { _, _ in
+                            store.persistSettings()
+                            store.purgeOldReadArticles()
+                        }
+                        Stepper(value: $store.fullContentCacheDays, in: 0...365) {
+                            if store.fullContentCacheDays == 0 {
+                                Text("全文缓存：不按时间清理")
+                            } else {
+                                Text("全文缓存 \(store.fullContentCacheDays) 天")
+                            }
+                        }
+                        .onChange(of: store.fullContentCacheDays) { _, _ in
+                            store.persistSettings()
+                            store.pruneFullContentCache()
+                        }
+                        Toggle(isOn: $store.fullContentURLPrefixEnabled) {
+                            Label("全文 URL 前缀", systemImage: "link.badge.plus")
+                        }
+                        .onChange(of: store.fullContentURLPrefixEnabled) { _, _ in
+                            store.persistSettings()
+                        }
+                        if store.fullContentURLPrefixEnabled {
+                            TextField("前缀，如 https://archive.is/", text: $store.fullContentURLPrefix)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .onChange(of: store.fullContentURLPrefix) { _, _ in
+                                    store.persistSettings()
+                                }
+                        }
+                        Toggle("导出设置时包含 API Key", isOn: $exportIncludeSecrets)
                         Button {
-                            store.syncICloudNow()
+                            do {
+                                let data = try store.exportSettingsJSON(includeSecrets: exportIncludeSecrets)
+                                let url = FileManager.default.temporaryDirectory.appendingPathComponent("Harbor-settings.json")
+                                try data.write(to: url, options: .atomic)
+                                settingsExportURL = url
+                                showSettingsExport = true
+                            } catch {
+                                settingsIOMessage = "导出失败：\(error.localizedDescription)"
+                            }
                         } label: {
-                            Label("立即同步", systemImage: "arrow.triangle.2.circlepath")
+                            Label("导出设置", systemImage: "square.and.arrow.up")
                         }
-                    }
-                } header: {
-                    Text("iCloud")
-                } footer: {
-                    Text("同步订阅源、分组与全部设置到同一 Apple ID 的其它设备。文章正文在换机后刷新即可重新获取。API Key 通过 iCloud 钥匙串同步（需在系统设置中登录 iCloud 并开启钥匙串）。")
-                }
-
-                // MARK: 备份
-                Section {
-                    Toggle("导出时包含 API Key", isOn: $exportIncludeSecrets)
-                    Button {
-                        do {
-                            let data = try store.exportSettingsJSON(includeSecrets: exportIncludeSecrets)
-                            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Harbor-settings.json")
-                            try data.write(to: url, options: .atomic)
-                            settingsExportURL = url
-                            showSettingsExport = true
-                        } catch {
-                            settingsIOMessage = "导出失败：\(error.localizedDescription)"
+                        Button { showSettingsImport = true } label: {
+                            Label("导入设置", systemImage: "square.and.arrow.down")
                         }
-                    } label: {
-                        Label("导出设置", systemImage: "square.and.arrow.up")
+                        if let settingsIOMessage {
+                            Text(settingsIOMessage).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("高级 · 清理与备份")
+                    } footer: {
+                        Text("设置备份默认不含 API Key。订阅源请用上方 OPML。")
                     }
-                    Button { showSettingsImport = true } label: {
-                        Label("导入设置", systemImage: "square.and.arrow.down")
-                    }
-                    if let settingsIOMessage {
-                        Text(settingsIOMessage).font(.footnote).foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("备份")
-                } footer: {
-                    Text("默认不含 API Key。订阅源请用 OPML 单独导出。")
                 }
-                } // showAdvancedSettings: 数据与备份
 
                 // MARK: 关于
                 Section {
@@ -365,6 +343,21 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("关于")
+                } footer: {
+                    Text("Harbor · 观澜")
+                }
+
+                Section {
+                    Toggle(isOn: $showAdvancedSettings) {
+                        Label(
+                            showAdvancedSettings ? "高级选项：已开启" : "显示高级选项",
+                            systemImage: showAdvancedSettings ? "slider.horizontal.3" : "line.3.horizontal.decrease.circle"
+                        )
+                    }
+                } footer: {
+                    Text(showAdvancedSettings
+                          ? "已显示：文章黑名单、已读/缓存保留、URL 前缀、设置导入导出。"
+                          : "默认精简。打开后可管理黑名单、缓存策略与设置备份。")
                 }
             }
             .appFormChrome()
@@ -398,6 +391,18 @@ struct SettingsView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showOPMLImport) {
+                OPMLDocumentPicker { url in
+                    showOPMLImport = false
+                    guard let url else { return }
+                    importOPML(from: url)
+                }
+            }
+            .sheet(isPresented: $showOPMLExport) {
+                if let url = opmlExportURL {
+                    SettingsExportPicker(url: url) { showOPMLExport = false }
+                }
+            }
             .alert("导入设置？", isPresented: $showImportConfirm) {
                 Button("取消", role: .cancel) { pendingImportData = nil }
                 Button("导入", role: .destructive) {
@@ -418,7 +423,46 @@ struct SettingsView: View {
             .onChange(of: store.titleDisplayMode) { _, _ in store.persistSettings() }
         }
     }
+
+    private func prepareOPMLExport() {
+        let content = store.exportOPML()
+        guard !content.isEmpty,
+              let url = store.writeExportFile(content: content, filename: "Harbor-subscriptions.opml") else {
+            dataIOMessage = "无法创建 OPML 文件"
+            return
+        }
+        opmlExportURL = url
+        showOPMLExport = true
+        dataIOMessage = nil
+    }
+
+    private func importOPML(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        var data: Data?
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        coordinator.coordinate(readingItemAt: url, error: &coordError) { coordinated in
+            data = try? Data(contentsOf: coordinated)
+        }
+        if data == nil { data = try? Data(contentsOf: url) }
+        guard let data, !data.isEmpty else {
+            dataIOMessage = "无法读取该文件"
+            return
+        }
+        let imported = store.importSubscriptions(data: data)
+        if imported.added == 0 && imported.skipped == 0 {
+            dataIOMessage = "未找到有效订阅地址"
+        } else {
+            var text = "已导入 \(imported.added) 个订阅"
+            if imported.skipped > 0 { text += "，跳过 \(imported.skipped) 个已存在" }
+            dataIOMessage = text
+            if imported.added > 0 { Task { await store.refreshAll() } }
+        }
+    }
 }
+
+// MARK: - 字号
 
 struct FontSettingsView: View {
     @Environment(AppStore.self) private var store
@@ -428,18 +472,16 @@ struct FontSettingsView: View {
         @Bindable var store = store
         Form {
             Section {
-                fontStepper(title: "分组名称", value: $store.groupTitleFontSize, range: 11...22)
-                fontStepper(title: "订阅列表标题", value: $store.feedTitleFontSize, range: 14...22)
-                fontStepper(title: "文章列表标题", value: $store.listTitleFontSize, range: 14...24)
-                fontStepper(title: "文章列表摘要", value: $store.listSummaryFontSize, range: 12...20)
+                fontRow("分组标题", value: $store.feedTitleFontSize, range: 13...24)
+                fontRow("列表标题", value: $store.listTitleFontSize, range: 14...26)
+                fontRow("列表摘要", value: $store.listSummaryFontSize, range: 12...20)
             } header: {
                 Text("列表")
             }
-
             Section {
-                fontStepper(title: "阅读器标题", value: $store.readerTitleFontSize, range: 18...32)
-                fontStepper(title: "阅读器正文", value: $store.fontSize, range: 12...28)
-                fontStepper(title: "AI 摘要", value: $store.aiSummaryFontSize, range: 14...28)
+                fontRow("文章标题", value: $store.readerTitleFontSize, range: 18...34)
+                fontRow("正文字号", value: $store.readerBodyFontSize, range: 14...28)
+                fontRow("AI 摘要", value: $store.aiSummaryFontSize, range: 14...28)
             } header: {
                 Text("阅读")
             } footer: {
@@ -447,25 +489,20 @@ struct FontSettingsView: View {
             }
         }
         .appFormChrome()
-        .navigationTitle("字号设置")
+        .navigationTitle("字体大小")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { store.persistSettings() }
-        .onChange(of: store.groupTitleFontSize) { _, _ in store.persistSettings() }
-        .onChange(of: store.feedTitleFontSize) { _, _ in store.persistSettings() }
-        .onChange(of: store.listTitleFontSize) { _, _ in store.persistSettings() }
-        .onChange(of: store.listSummaryFontSize) { _, _ in store.persistSettings() }
-        .onChange(of: store.readerTitleFontSize) { _, _ in store.persistSettings() }
-        .onChange(of: store.fontSize) { _, _ in store.persistSettings() }
-        .onChange(of: store.aiSummaryFontSize) { _, _ in store.persistSettings() }
     }
 
-    @ViewBuilder
-    private func fontStepper(title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text("\(Int(value.wrappedValue))").foregroundStyle(.secondary).monospacedDigit()
-            Stepper("", value: value, in: range, step: 1).labelsHidden()
+    private func fontRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("\(Int(value.wrappedValue))").foregroundStyle(.secondary).monospacedDigit()
+            }
+            Slider(value: value, in: range, step: 1)
+                .onChange(of: value.wrappedValue) { _, _ in store.persistSettings() }
         }
     }
 }
