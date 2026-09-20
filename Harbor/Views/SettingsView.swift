@@ -312,7 +312,7 @@ struct SettingsView: View {
                 } header: {
                     Text("清理与备份")
                 } footer: {
-                    Text("设置备份默认不含 API Key。订阅源请用上方 OPML。")
+                    Text("设置备份含全局偏好与各源开关（全文/评论/自动翻译/URL 前缀等）；默认不含 API Key。订阅列表本身请用 OPML。")
                 }
 
                 // MARK: 关于

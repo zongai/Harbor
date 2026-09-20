@@ -748,6 +748,25 @@ class AppStore: AIService.Runtime {
 
     // MARK: - Settings export / import / AI probe
 
+    /// 设置备份中的源级偏好（不含文章正文，按 URL 匹配恢复）
+    struct FeedSettingsSnapshot: Codable {
+        var url: String
+        var title: String?
+        /// 分组名（跨设备比 UUID 更稳）
+        var groupName: String?
+        var fetchFullContentEnabled: Bool?
+        var fetchCommentsEnabled: Bool?
+        var autoTranslateEnabled: Bool?
+        var useFullContentURLPrefix: Bool?
+        var summaryPromptPresetID: String?
+        var sortOrder: Int?
+    }
+
+    struct GroupSettingsSnapshot: Codable {
+        var name: String
+        var sortOrder: Int?
+    }
+
     struct SettingsExportPayload: Codable {
         var version: Int
         var fontSize: Double
@@ -768,6 +787,7 @@ class AppStore: AIService.Runtime {
         /// 可选：旧备份无此字段时保持导入端现状
         var fullContentURLPrefixEnabled: Bool?
         var fullContentURLPrefix: String?
+        var feedSortMode: String?
         var ttsVoice: String
         var ttsRate: Double?
         var colorTheme: String
@@ -781,11 +801,31 @@ class AppStore: AIService.Runtime {
         var aiProviders: [AIProvider]
         var translationKeys: [String: String]?
         var aiKeys: [String: String]?
+        /// 分组与源级开关（全文/评论/自动翻译/URL 前缀等）
+        var groups: [GroupSettingsSnapshot]?
+        var feeds: [FeedSettingsSnapshot]?
     }
 
     func exportSettingsJSON(includeSecrets: Bool = false) throws -> Data {
+        let groupNameByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0.name) })
+        let feedSnaps: [FeedSettingsSnapshot] = feeds.map { f in
+            FeedSettingsSnapshot(
+                url: f.url,
+                title: f.title,
+                groupName: f.groupID.flatMap { groupNameByID[$0] },
+                fetchFullContentEnabled: f.fetchFullContentEnabled,
+                fetchCommentsEnabled: f.fetchCommentsEnabled,
+                autoTranslateEnabled: f.autoTranslateEnabled,
+                useFullContentURLPrefix: f.useFullContentURLPrefix,
+                summaryPromptPresetID: f.summaryPromptPresetID,
+                sortOrder: f.sortOrder
+            )
+        }
+        let groupSnaps: [GroupSettingsSnapshot] = groups.map {
+            GroupSettingsSnapshot(name: $0.name, sortOrder: $0.sortOrder)
+        }
         let payload = SettingsExportPayload(
-            version: 2,
+            version: 3,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
             listSummaryFontSize: listSummaryFontSize,
@@ -803,6 +843,7 @@ class AppStore: AIService.Runtime {
             fullContentCacheDays: fullContentCacheDays,
             fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
             fullContentURLPrefix: fullContentURLPrefix,
+            feedSortMode: feedSortMode.rawValue,
             ttsVoice: ttsVoice,
             ttsRate: ttsRate,
             colorTheme: colorTheme.rawValue,
@@ -823,7 +864,9 @@ class AppStore: AIService.Runtime {
                 let keys = loadAIKeys(for: p.id)
                 guard !keys.isEmpty else { return nil }
                 return (p.id.uuidString, keys.joined(separator: "\n"))
-            }) : nil
+            }) : nil,
+            groups: groupSnaps,
+            feeds: feedSnaps
         )
         return try JSONEncoder().encode(payload)
     }
@@ -890,7 +933,60 @@ class AppStore: AIService.Runtime {
                 .filter { !$0.isEmpty }
             saveAIKeys(for: uuid, keys: parts.isEmpty ? [v] : parts)
         }
+        if let sortRaw = payload.feedSortMode, let sort = FeedSortMode(rawValue: sortRaw) {
+            feedSortMode = sort
+        }
+        applyImportedFeedAndGroupSettings(
+            groups: payload.groups ?? [],
+            feeds: payload.feeds ?? []
+        )
         saveToStorage()
+    }
+
+    /// 将备份中的分组与源级开关合并到当前订阅（按 URL / 分组名匹配，不删已有源）
+    private func applyImportedFeedAndGroupSettings(
+        groups groupSnaps: [GroupSettingsSnapshot],
+        feeds feedSnaps: [FeedSettingsSnapshot]
+    ) {
+        guard !groupSnaps.isEmpty || !feedSnaps.isEmpty else { return }
+
+        for g in groupSnaps {
+            let name = g.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            if let idx = groups.firstIndex(where: { $0.name == name }) {
+                if let order = g.sortOrder {
+                    groups[idx].sortOrder = order
+                }
+            } else {
+                groups.append(FeedGroup(name: name, sortOrder: g.sortOrder ?? groups.count))
+            }
+        }
+        FeedRepository.saveGroups(groups)
+
+        let groupIDByName = Dictionary(uniqueKeysWithValues: groups.map { ($0.name, $0.id) })
+        var touched = false
+        for snap in feedSnaps {
+            let key = Self.canonicalLink(snap.url)
+            guard !key.isEmpty else { continue }
+            guard let i = feeds.firstIndex(where: { Self.canonicalLink($0.url) == key }) else { continue }
+            if let v = snap.fetchFullContentEnabled { feeds[i].fetchFullContentEnabled = v }
+            if let v = snap.fetchCommentsEnabled { feeds[i].fetchCommentsEnabled = v }
+            if let v = snap.autoTranslateEnabled { feeds[i].autoTranslateEnabled = v }
+            if let v = snap.useFullContentURLPrefix { feeds[i].useFullContentURLPrefix = v }
+            if let v = snap.summaryPromptPresetID, !v.isEmpty { feeds[i].summaryPromptPresetID = v }
+            if let v = snap.sortOrder { feeds[i].sortOrder = v }
+            if let title = snap.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                feeds[i].title = title
+            }
+            if let gName = snap.groupName?.trimmingCharacters(in: .whitespacesAndNewlines), !gName.isEmpty {
+                feeds[i].groupID = groupIDByName[gName]
+            }
+            touched = true
+        }
+        if touched {
+            articleFlagsEpoch &+= 1
+            rebuildArticleIndex()
+        }
     }
 
 
