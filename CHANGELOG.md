@@ -104,7 +104,7 @@
 ### Fixed
 - 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
-## [1.3-83] — 构建中 · 分支 ui-redesign-experiment
+## [1.3-83] — 构建成功 (build168 / Actions 35495833175) · 分支 ui-redesign-experiment
 
 相对：`v1.3-82` / build167
 
