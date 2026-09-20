@@ -2,14 +2,14 @@
 
 **Harbor**（中文名：**观澜**）是原生 SwiftUI 实现的 iOS / iPadOS RSS 阅读器。支持 RSS 与 Atom，内置全文抓取、多引擎翻译、AI 摘要 / 解释 / 对话、Edge TTS 朗读、源分组、评论（Substack / HN / Engadget 等）与离线缓存。
 
-**版本**：本地调试 `v1.3-79`；CI 构建 `v1.3-79-build{N}`（`N` = GitHub Actions `run_number`）。
+**版本**：Marketing **1.3**；Build 见 `CURRENT_PROJECT_VERSION`。CI 产物展示为 `v1.3-{build}-build{N}`。正式发行以 [Releases](https://github.com/zongai/IosRss/releases) 为准。
 
 > **文档维护**：有意义的功能变更后，构建时默认同步更新 `README.md`（及按约定整理 `CHANGELOG.md`）。CI **不**自动回写文档。
 
 ## 功能
 
 ### 订阅与分组
-- **全库搜索**：标题 / 摘要 / 已抓全文
+- **全库搜索**：默认标题 / 摘要（含译文）；可选扩展扫正文（默认关闭以降低大库成本）
 - **订阅管理**：添加 RSS / Atom；自动发现常见 feed 路径；源名称可重命名；失败时提示并中止添加
 - **源分组**：添加时可指定分组（默认未分组）；移动到分组；分组管理；**分组可折叠**（刷新保留折叠状态）
 - **无未读隐藏**：默认只显示有未读的源；设置中开启「显示已读文章」可查看全部
@@ -64,32 +64,24 @@
 
 ```
 Harbor/
-├── App.swift / ContentView.swift / Cloud.swift / Info.plist
-├── Theme/AppTheme.swift
+├── App.swift / ContentView.swift / Info.plist
+├── Theme/          # 设计 tokens、阅读主题、字体
 ├── Models/
-│   ├── AppStore.swift
-│   └── FeedModels.swift
+│   ├── AppStore.swift           # 订阅数据与协调入口
+│   ├── FeedModels.swift         # Feed / Article 等模型
+│   ├── SessionChromeState.swift # 刷新/列表翻译进度（独立观察）
+│   └── SettingsStore.swift      # 用户偏好与引擎配置（独立观察）
 ├── Services/
-│   ├── FeedRepository.swift          # 源/分组/已读持久化
-│   ├── FeedRefreshService.swift      # Feed 网络拉取
-│   ├── ArticleSearchService.swift    # 全库搜索
-│   ├── SettingsRepository.swift       # 用户偏好持久化
-│   ├── TranslationCoordinator.swift # 引擎链与限流
-│   ├── AIService.swift               # 摘要/解释
-│   ├── FeedParser.swift
-│   ├── ArticleContentFetcher.swift
-│   ├── CommentFetcher.swift
-│   ├── EdgeTTS.swift
-│   ├── OfflineCache.swift
-│   ├── NetworkURLPolicy.swift
-│   └── TranslationServices.swift
-└── Views/
-    ├── FeedsListView / AddFeedView / AIChatView
-    ├── ArticleListView / ArticleReaderView
-    ├── ArticleContentViews / SelectableTextViews / ArticleCommentsView
-    ├── FavoritesListView
-    └── SettingsView / SettingsExtraViews / SettingsAIViews
+│   ├── FeedRepository / SettingsRepository / OfflineCache
+│   ├── FeedRefreshService / FeedParser / NetworkURLPolicy
+│   ├── ArticleContentFetcher / RequestDeduper / ImageDownsampling
+│   ├── ArticleSearchService / CommentFetcher
+│   ├── TranslationCoordinator / TranslationServices
+│   ├── AIService / EdgeTTS / ICloudSyncService
+└── Views/          # SwiftUI：订阅、列表、阅读、搜索、收藏、对话、设置
 ```
+
+状态大致分为：订阅数据（`feeds`）· 会话进度（`chrome`）· 偏好（`settings`）。
 
 ## 要求
 
@@ -100,22 +92,38 @@ Harbor/
 
 ## 设置说明
 
+设置页分区（与代码一致）：
+
 | 分区 | 内容 |
 |------|------|
-| 阅读 | 标题模式、显示已读、订阅源排序 |
-| 外观 | 跟随系统/浅/深、阅读主题、字体、字号 |
-| 翻译与 AI | 引擎顺序、Key/区域、AI Provider 与经济模型、Prompt 预设、兴趣过滤、模型路由、黑名单 |
-| 朗读 | Edge TTS 音色与语速 |
-| 数据与清理 | 已读保留、全文缓存、**全文 URL 前缀**、清除离线缓存 |
-| 备份 | 导出 / 导入 JSON（默认不含 Key） |
-| 关于 | 版本号与默认引擎摘要 |
+| 账号 | iCloud 云同步与状态 |
+| 阅读 | 标题模式、字号分区、外观与阅读主题、字体、朗读（Edge TTS） |
+| 订阅 | 显示已读、源排序等 |
+| AI | Provider、经济模型、Prompt 预设、兴趣过滤、黑名单；翻译引擎链与目标语言在子页 |
+| 数据 | 已读保留天数、全文缓存、全文 URL 前缀、清除离线缓存、OPML 导入/导出、设置备份 |
+| 关于 | 版本与相关说明 |
+
+部分翻译 Key、AI Key 存于 **Keychain**（第三方服务，需自备 Key 的引擎除外）。
 
 ## 版本号
 
-| 场景 | 显示 |
+| 字段 | 来源 |
 |------|------|
-| 本地 Xcode | `v1.3-79` |
-| GitHub Actions | `v1.3-79-build{N}` |
+| Marketing（`CFBundleShortVersionString`） | `MARKETING_VERSION`，当前 **1.3** |
+| Build（`CFBundleVersion`） | `CURRENT_PROJECT_VERSION`（随发布构建递增） |
+| CI 展示 | `v1.3-{build}-build{run_number}`（见设置页 / AppVersion） |
+
+正式功能以 **main** 与 GitHub Releases 为准。开发分支（如 `ui-redesign-experiment`）上的 UI/性能改动可能尚未并入正式 Release。
+
+最新构建见 [GitHub Releases](https://github.com/zongai/IosRss/releases) 与 [Actions](https://github.com/zongai/IosRss/actions)。
+
+## 已知限制
+
+- 全文抓取依赖站点 HTML 结构；遇 Cloudflare 等人机验证时需在浏览器打开。
+- 搜索默认匹配**标题与摘要**（含译文），不扫描已抓全文正文，以控制大库键入成本。
+- 翻译 / AI 依赖第三方 API；限流、可用性与费用由各服务方决定。
+- Edge TTS 为在线服务，需网络。
+- Bundle ID 仍为示例 `com.example.Harbor`，上架前需自行更换。
 
 ## Changelog
 

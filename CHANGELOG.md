@@ -94,11 +94,15 @@
 
 相对：`v1.3-81` / build164
 
-### 架构（观察域增量拆分）
-- SettingsStore：字体/主题/引擎等偏好独立 @Observable
-- AppStore @dynamicMemberLookup 兼容旧访问；设置页 Bindable(settings)
-- 列表翻译进度 ListTranslationChromeProgress 只观察 chrome
-- 阅读页翻译/摘要保持本地 @State（注释标明）
+### Changed
+- **SettingsStore**：字体 / 主题 / 翻译与 AI 等偏好独立 `@Observable`；AppStore 以计算属性桥接访问
+- **SessionChromeState**（既有）：刷新与列表翻译进度与订阅数据分域观察
+- 设置页使用 `Bindable(settings)` 绑定偏好字段
+- 列表翻译工具栏进度 `ListTranslationChromeProgress` 仅观察 `chrome`
+- 阅读页翻译 / 摘要继续使用本地 `@State`，不写入 AppStore
+
+### Fixed
+- 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
 ## [Unreleased]
 
