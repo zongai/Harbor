@@ -48,9 +48,10 @@ enum ArticleContentFetcher {
             throw FetchError.invalidURL
         }
 
+        // 仅复用「足够长」的缓存；过短/空壳（历史误存）强制重抓
         if let cached = OfflineCache.loadArticleHTML(link: urlString), !cached.isEmpty {
             let len = HTMLUtils.stripTags(cached).count
-            if len >= 80 {
+            if len >= 400 {
                 return Result(title: nil, contentHTML: cached, textLength: len)
             }
         }
@@ -77,8 +78,8 @@ enum ArticleContentFetcher {
             }
         }
 
-        // WordPress 站点（如 Visual Capitalist）：优先 slug REST，常可绕过部分前端门禁
-        if isWordPressChartHost(url.host),
+        // WordPress REST（Visual Capitalist / SpaceNews 等）：比前端 HTML 更稳
+        if prefersWordPressREST(url.host),
            let wp = await fetchWordPressBySlug(pageURL: url) {
             OfflineCache.saveArticleHTML(link: urlString, html: wp.content)
             let len = HTMLUtils.stripTags(wp.content).count
@@ -748,21 +749,24 @@ enum ArticleContentFetcher {
                 "article-content",
                 "single-content"
             ]
-        } else if host == "cn.nytimes.com" || host.hasSuffix(".cn.nytimes.com")
-                    || host == "nytimes.com" || host.hasSuffix(".nytimes.com") {
+        } else if isNYTimesHost(host) {
             // 中文网正文分散在多个 article-body / article-paragraph
             selectors = [
                 "article-content",
                 "article-body",
-                "story-body",
-                "article-paragraph"
+                "story-body"
             ]
         } else {
             selectors = []
         }
 
-        // 纽约时报中文网：优先拼装段落（比整块 article 更干净）
-        if host == "cn.nytimes.com" || host.hasSuffix(".cn.nytimes.com") {
+        // SpaceNews / NYT：段落拼装优先（不依赖平衡 div 匹配，避免整页空白）
+        if host == "spacenews.com" || host.hasSuffix(".spacenews.com") {
+            if let body = extractSpaceNewsBody(html) {
+                return body
+            }
+        }
+        if isNYTimesHost(host) {
             if let nyt = extractNYTimesCNBody(html) {
                 return nyt
             }
@@ -813,10 +817,16 @@ enum ArticleContentFetcher {
         return bestLen >= 200 ? best : nil
     }
 
-    /// 纽约时报中文网：收集 `article-paragraph` 为标准段落，去掉广告与侧栏
+    private static func isNYTimesHost(_ host: String) -> Bool {
+        host == "cn.nytimes.com" || host.hasSuffix(".cn.nytimes.com")
+            || host == "nytimes.com" || host.hasSuffix(".nytimes.com")
+    }
+
+    /// 纽约时报中文网：收集 `article-paragraph` 为标准 `<p>`（阅读器依赖段落结构）
     private static func extractNYTimesCNBody(_ html: String) -> String? {
+        // 兼容 class 顺序/额外 token：article-paragraph 出现在 class 任意位置
         guard let regex = try? NSRegularExpression(
-            pattern: #"<div[^>]*class=["'][^"']*article-paragraph[^"']*["'][^>]*>([\s\S]*?)</div>"#,
+            pattern: #"<div\b[^>]*class=["'][^"']*\barticle-paragraph\b[^"']*["'][^>]*>([\s\S]*?)</div>"#,
             options: .caseInsensitive
         ) else { return nil }
         let ns = html as NSString
@@ -825,30 +835,76 @@ enum ArticleContentFetcher {
         for m in matches {
             guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: html) else { continue }
             let inner = String(html[r])
-            let text = HTMLUtils.stripTags(inner).trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = HTMLUtils.stripTags(inner)
+                .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.count >= 8 else { continue }
-            // 跳过纯广告/导航短句
             let lower = text.lowercased()
             if lower == "广告" || lower == "advertisement" { continue }
-            if lower.hasPrefix("订阅") && text.count < 20 { continue }
+            if lower.hasPrefix("订阅") && text.count < 24 { continue }
+            // 纯文本包进 <p>，避免残留复杂嵌套导致阅读页解析为空
+            let escaped = text
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+            paragraphs.append("<p>\(escaped)</p>")
+        }
+        guard paragraphs.count >= 2 else { return nil }
+        let joined = paragraphs.joined(separator: "\n")
+        let len = HTMLUtils.stripTags(joined).count
+        return len >= 120 ? joined : nil
+    }
+
+    /// SpaceNews：从 entry-content 收集 wp-block-paragraph / <p>
+    private static func extractSpaceNewsBody(_ html: String) -> String? {
+        var region = html
+        if let open = firstMatchRange(#"<div[^>]*class=["'][^"']*\bentry-content\b[^"']*["'][^>]*>"#, in: html) {
+            // 不依赖严格平衡：截取入口后 80KB 足够一篇新闻
+            let start = open.upperBound
+            let end = html.index(start, offsetBy: min(80_000, html.distance(from: start, to: html.endIndex)))
+            region = String(html[start..<end])
+            // 在区域尾部截断礼物/验证/相关
+            for marker in ["Gift this article", "Verify your email", "jp-relatedposts", "newspack-content-gifting", "Related Posts"] {
+                if let r = region.range(of: marker, options: .caseInsensitive) {
+                    region = String(region[..<r.lowerBound])
+                    break
+                }
+            }
+        }
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<p\b[^>]*>([\s\S]*?)</p>"#,
+            options: .caseInsensitive
+        ) else { return nil }
+        let ns = region as NSString
+        let matches = regex.matches(in: region, range: NSRange(location: 0, length: ns.length))
+        var paragraphs: [String] = []
+        for m in matches {
+            guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: region) else { continue }
+            let inner = String(region[r])
+            let text = HTMLUtils.stripTags(inner)
+                .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.count >= 40 else { continue }
+            let lower = text.lowercased()
+            if lower.contains("recaptcha") { continue }
+            if lower.contains("privacy policy and agree") { continue }
+            if lower.hasPrefix("gift this") { continue }
+            if lower.hasPrefix("verify your email") { continue }
             paragraphs.append("<p>\(inner)</p>")
         }
-        guard paragraphs.count >= 3 else { return nil }
+        guard paragraphs.count >= 2 else { return nil }
         let joined = paragraphs.joined(separator: "\n")
-        let cleaned = sanitizeNYTimesBody(joined)
-        let len = HTMLUtils.stripTags(cleaned).count
-        return len >= 200 ? cleaned : nil
+        let len = HTMLUtils.stripTags(joined).count
+        return len >= 200 ? joined : nil
     }
 
     private static func sanitizeNYTimesBody(_ html: String) -> String {
         var work = truncateArticleTail(html)
         work = removeBlocksWithClassTokens(work, tokens: [
             "big_ad", "article-body-aside", "ad-wrapper", "ad-container",
-            "author-info", "article-footer", "newsletter", "subscribe",
-            "related-coverage", "recommended", "comments", "share-tools",
-            "gdpr", "cookie", "article-header", "multi-column-layout-aside"
+            "author-info", "article-footer",
+            "related-coverage", "share-tools",
+            "multi-column-layout-aside"
         ])
-        // 去掉仅含「广告」的节点
         work = work.replacingOccurrences(
             of: #"<[^>]+>\s*广告\s*</[^>]+>"#,
             with: "",
@@ -866,9 +922,8 @@ enum ArticleContentFetcher {
             "td-post-share", "td-post-source-tags", "td-post-next-prev",
             "td-related", "related-posts", "comments", "comment-list",
             "td-header", "td-footer", "td-menu", "td-search",
-            "newsletter", "subscribe", "sharedaddy"
+            "sharedaddy"
         ])
-        // 常见广告标签「Anzeige」段落
         work = work.replacingOccurrences(
             of: #"<p[^>]*>\s*Anzeige\s*</p>"#,
             with: "",
@@ -881,12 +936,12 @@ enum ArticleContentFetcher {
 
     private static func sanitizeSpaceNewsBody(_ html: String) -> String {
         var work = truncateArticleTail(html)
+        // 勿用裸 subscribe/newsletter：会误伤正文容器
         work = removeBlocksWithClassTokens(work, tokens: [
             "jp-relatedposts", "relatedposts", "related-posts",
             "newspack-content-gifting", "newspack-reader-auth",
             "newspack-ui__modal", "newspack-subscribe",
-            "sharedaddy", "jetpack-share", "wp-block-jetpack",
-            "newsletter", "subscribe", "recaptcha",
+            "sharedaddy", "jetpack-share",
             "comments-area", "entry-footer", "post-footer"
         ])
         work = truncateArticleTail(work)
@@ -1489,11 +1544,20 @@ enum ArticleContentFetcher {
 
 
     private static func isWordPressChartHost(_ host: String?) -> Bool {
+        prefersWordPressREST(host)
+    }
+
+    /// 优先走 WP REST 的站点（HTML 门禁多或前端噪音大）
+    private static func prefersWordPressREST(_ host: String?) -> Bool {
         guard let host = host?.lowercased() else { return false }
         return host == "visualcapitalist.com"
             || host.hasSuffix(".visualcapitalist.com")
             || host == "voronoiapp.com"
             || host.hasSuffix(".voronoiapp.com")
+            || host == "spacenews.com"
+            || host.hasSuffix(".spacenews.com")
+            || host == "hartpunkt.de"
+            || host.hasSuffix(".hartpunkt.de")
     }
 
     /// 按 slug 拉 WP REST：`/wp-json/wp/v2/posts?slug=...&_embed=1`
