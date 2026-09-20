@@ -1490,7 +1490,21 @@ struct DownsampledArticleImage: View {
         }
         do {
             var request = URLRequest(url: url, timeoutInterval: 20)
-            request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+            request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+            // 部分 CDN（如 Sixth Tone / 国内图床）校验 Referer
+            if let host = url.host?.lowercased() {
+                if host.contains("sixthtone.com") {
+                    request.setValue("https://www.sixthtone.com/", forHTTPHeaderField: "Referer")
+                } else if host.contains("expreview.com") {
+                    request.setValue("https://www.expreview.com/", forHTTPHeaderField: "Referer")
+                } else if let scheme = url.scheme {
+                    request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
+                }
+            }
+            request.setValue(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                forHTTPHeaderField: "User-Agent"
+            )
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
             guard !data.isEmpty else { return }

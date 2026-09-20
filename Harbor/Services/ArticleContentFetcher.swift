@@ -525,7 +525,8 @@ enum ArticleContentFetcher {
         }
     }
 
-    /// 从页面 `__NEXT_DATA__` 取出 detailData.data.content + textImageList 配图
+    /// 从页面 `__NEXT_DATA__` 取出 detailData.data.content + textImageList 配图。
+    /// 正文里的空节点 `<div data-index="N" class="illustrationWrap">` 对应 textImageList[N]。
     private static func extractSixthTone(from html: String, baseURL: URL) -> Result? {
         guard let jsonText = matchFirst(
             #"<script[^>]*id=[\"']__NEXT_DATA__[\"'][^>]*>([\s\S]*?)</script>"#,
@@ -549,27 +550,35 @@ enum ArticleContentFetcher {
         }()
         guard let article else { return nil }
 
-        let contentHTML = (article["content"] as? String)?
+        var contentHTML = (article["content"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !contentHTML.isEmpty else { return nil }
 
         let title = (article["name"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let images = (article["textImageList"] as? [[String: Any]]) ?? []
+        // 把 illustrationWrap 占位替换为真实配图（保持文中位置，而非全部堆到文末）
+        contentHTML = injectSixthToneIllustrations(into: contentHTML, images: images, baseURL: baseURL)
+
         var parts: [String] = []
 
-        // 封面图（headPic / bigPic）
+        // 封面图（headPic / bigPic）——仅当正文尚未包含时前置
         let cover = (article["headPic"] as? String)
             ?? (article["bigPic"] as? String)
             ?? (article["smallPic"] as? String)
-        if let cover, !cover.isEmpty, contentHTML.range(of: cover, options: .caseInsensitive) == nil {
-            parts.append("<p><img src=\"\(absoluteSixthToneURL(cover, base: baseURL))\" /></p>")
+        if let cover, !cover.isEmpty {
+            let absCover = absoluteSixthToneURL(cover, base: baseURL)
+            if contentHTML.range(of: absCover, options: .caseInsensitive) == nil,
+               contentHTML.range(of: cover, options: .caseInsensitive) == nil {
+                parts.append("<p><img src=\"\(absCover)\" alt=\"\" /></p>")
+            }
         }
 
         parts.append(contentHTML)
 
-        // 正文内通常无 <img>，配图在 textImageList
-        if let images = article["textImageList"] as? [[String: Any]] {
+        // 未被占位消耗的配图（无 illustrationWrap 的旧文）仍附在文末，避免丢图
+        if contentHTML.range(of: "illustrationWrap", options: .caseInsensitive) == nil {
             for img in images {
                 guard let rawURL = img["url"] as? String, !rawURL.isEmpty else { continue }
                 let abs = absoluteSixthToneURL(rawURL, base: baseURL)
@@ -577,16 +586,7 @@ enum ArticleContentFetcher {
                     || contentHTML.range(of: rawURL, options: .caseInsensitive) != nil {
                     continue
                 }
-                var block = "<figure><img src=\"\(abs)\" />"
-                if let desc = img["desc"] as? String {
-                    let caption = HTMLUtils.stripTags(desc)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !caption.isEmpty {
-                        block += "<figcaption>\(escapeHTMLText(caption))</figcaption>"
-                    }
-                }
-                block += "</figure>"
-                parts.append(block)
+                parts.append(sixthToneFigureHTML(url: abs, desc: img["desc"] as? String))
             }
         }
 
@@ -595,6 +595,76 @@ enum ArticleContentFetcher {
         let len = HTMLUtils.stripTags(cleaned).count
         guard len >= 80 else { return nil }
         return Result(title: title, contentHTML: cleaned, textLength: len)
+    }
+
+    /// 将 `<div data-index="N" class="illustrationWrap">` 替换为 textImageList[N] 的 figure
+    private static func injectSixthToneIllustrations(
+        into html: String,
+        images: [[String: Any]],
+        baseURL: URL
+    ) -> String {
+        guard !images.isEmpty else {
+            // 去掉空占位，避免阅读页留白
+            return html.replacingOccurrences(
+                of: #"<div[^>]*class=["'][^"']*illustrationWrap[^"']*["'][^>]*>\s*</div>"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<div([^>]*class=["'][^"']*illustrationWrap[^"']*["'][^>]*)>\s*</div>"#,
+            options: .caseInsensitive
+        ) else { return html }
+
+        var work = html
+        let ns = work as NSString
+        let matches = regex.matches(in: work, range: NSRange(location: 0, length: ns.length)).reversed()
+        for match in matches {
+            guard let full = Range(match.range, in: work) else { continue }
+            let openAttrs: String = {
+                if match.numberOfRanges >= 2, let r = Range(match.range(at: 1), in: work) {
+                    return String(work[r])
+                }
+                return ""
+            }()
+            var index = 0
+            if let m = openAttrs.range(of: #"data-index=["'](\d+)["']"#, options: .regularExpression) {
+                let frag = String(openAttrs[m])
+                if let num = frag.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                    .first(where: { !$0.isEmpty }),
+                   let n = Int(num) {
+                    index = n
+                }
+            }
+            guard index >= 0, index < images.count,
+                  let rawURL = images[index]["url"] as? String, !rawURL.isEmpty else {
+                work.replaceSubrange(full, with: "")
+                continue
+            }
+            let abs = absoluteSixthToneURL(rawURL, base: baseURL)
+            let figure = sixthToneFigureHTML(url: abs, desc: images[index]["desc"] as? String)
+            work.replaceSubrange(full, with: "\n\(figure)\n")
+        }
+        // 清理仍为空的 illustrationWrap / authorWrap
+        work = work.replacingOccurrences(
+            of: #"<div[^>]*class=["'][^"']*(?:illustrationWrap|authorWrap)[^"']*["'][^>]*>\s*</div>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return work
+    }
+
+    private static func sixthToneFigureHTML(url: String, desc: String?) -> String {
+        var block = "<figure><img src=\"\(url)\" alt=\"\" />"
+        if let desc {
+            let caption = HTMLUtils.stripTags(desc)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !caption.isEmpty {
+                block += "<figcaption>\(escapeHTMLText(caption))</figcaption>"
+            }
+        }
+        block += "</figure>"
+        return block
     }
 
     private static func absoluteSixthToneURL(_ raw: String, base: URL) -> String {
@@ -741,6 +811,18 @@ enum ArticleContentFetcher {
                 "td-post-content",
                 "tdb-block-inner",
                 "tagdiv-type"
+            ]
+        } else if host == "expreview.com" || host.hasSuffix(".expreview.com") {
+            // 超能网：正文区 + 常见懒加载图字段（data-original / data-src）
+            selectors = [
+                "article-content",
+                "article_content",
+                "content-article",
+                "post-content",
+                "entry-content",
+                "article-body",
+                "main-content",
+                "content"
             ]
         } else if host == "spacenews.com" || host.hasSuffix(".spacenews.com") {
             selectors = [
@@ -1687,11 +1769,19 @@ enum ArticleContentFetcher {
         let existingSrc = attr("src")
         let rawCandidates = [
             attr("data-full-url"),
+            attr("data-full"),
             attr("data-large_image"),
+            attr("data-large-file"),
             attr("data-original"),
+            attr("data-original-src"),
             attr("data-src"),
             attr("data-lazy-src"),
+            attr("data-lazy"),
             attr("data-url"),
+            attr("data-echo"),
+            attr("data-actualsrc"),
+            attr("data-real-src"),
+            attr("data-img-src"),
             attr("data-lazy-srcset").flatMap { bestURLFromSrcset($0) },
             bestURLFromSrcset(attr("data-srcset")),
             bestURLFromSrcset(attr("srcset")),
