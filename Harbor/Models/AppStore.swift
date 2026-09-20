@@ -784,10 +784,27 @@ class AppStore: AIService.Runtime {
         var explainPrompt: String
         var readRetentionDays: Int
         var fullContentCacheDays: Int
-        /// 可选：旧备份无此字段时保持导入端现状
+        /// 以下可选：旧备份无字段时保持导入端现状
         var fullContentURLPrefixEnabled: Bool?
         var fullContentURLPrefix: String?
         var feedSortMode: String?
+        var appFontFamily: String?
+        var targetLanguage: String?
+        var aiOutputLanguage: String?
+        var translationEngineChain: [String]?
+        var translationConcurrency: Int?
+        var microsoftTranslateRegion: String?
+        var lingvaCustomBase: String?
+        var globalSummaryPresetID: String?
+        var summaryPromptPresets: [SummaryPromptPreset]?
+        var smartInterestFilterEnabled: Bool?
+        var autoMarkLowInterestRead: Bool?
+        var lowInterestThreshold: Double?
+        var sortByInterestScore: Bool?
+        var modelRoutingEnabled: Bool?
+        var modelRoutingShortLimit: Int?
+        var interestWeights: [String: Double]?
+        var defaultChatProviderID: UUID?
         var ttsVoice: String
         var ttsRate: Double?
         var colorTheme: String
@@ -825,7 +842,7 @@ class AppStore: AIService.Runtime {
             GroupSettingsSnapshot(name: $0.name, sortOrder: $0.sortOrder)
         }
         let payload = SettingsExportPayload(
-            version: 3,
+            version: 4,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
             listSummaryFontSize: listSummaryFontSize,
@@ -844,6 +861,23 @@ class AppStore: AIService.Runtime {
             fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
             fullContentURLPrefix: fullContentURLPrefix,
             feedSortMode: feedSortMode.rawValue,
+            appFontFamily: appFontFamily.rawValue,
+            targetLanguage: targetLanguage.rawValue,
+            aiOutputLanguage: aiOutputLanguage.rawValue,
+            translationEngineChain: translationEngineChain.map(\.rawValue),
+            translationConcurrency: translationConcurrency,
+            microsoftTranslateRegion: microsoftTranslateRegion,
+            lingvaCustomBase: lingvaCustomBase,
+            globalSummaryPresetID: globalSummaryPresetID,
+            summaryPromptPresets: summaryPromptPresets,
+            smartInterestFilterEnabled: smartInterestFilterEnabled,
+            autoMarkLowInterestRead: autoMarkLowInterestRead,
+            lowInterestThreshold: lowInterestThreshold,
+            sortByInterestScore: sortByInterestScore,
+            modelRoutingEnabled: modelRoutingEnabled,
+            modelRoutingShortLimit: modelRoutingShortLimit,
+            interestWeights: interestWeights,
+            defaultChatProviderID: defaultChatProviderID,
             ttsVoice: ttsVoice,
             ttsRate: ttsRate,
             colorTheme: colorTheme.rawValue,
@@ -894,6 +928,46 @@ class AppStore: AIService.Runtime {
         if let prefix = payload.fullContentURLPrefix {
             fullContentURLPrefix = prefix
         }
+        if let fam = payload.appFontFamily, let f = AppFontFamily(rawValue: fam) {
+            appFontFamily = f
+        }
+        if let raw = payload.targetLanguage, let lang = AppLanguage(rawValue: raw) {
+            targetLanguage = lang
+        }
+        if let raw = payload.aiOutputLanguage, let lang = AppLanguage(rawValue: raw) {
+            aiOutputLanguage = lang
+        }
+        if let chain = payload.translationEngineChain {
+            let engines = chain.compactMap { TranslationEngine(rawValue: $0) }
+            if !engines.isEmpty { translationEngineChain = engines }
+        }
+        if let n = payload.translationConcurrency {
+            translationConcurrency = max(0, n)
+        }
+        if let region = payload.microsoftTranslateRegion {
+            microsoftTranslateRegion = region
+        }
+        if let base = payload.lingvaCustomBase {
+            lingvaCustomBase = base
+        }
+        if let id = payload.globalSummaryPresetID, !id.isEmpty {
+            globalSummaryPresetID = id
+        }
+        if let presets = payload.summaryPromptPresets, !presets.isEmpty {
+            summaryPromptPresets = presets
+        }
+        if let v = payload.smartInterestFilterEnabled { smartInterestFilterEnabled = v }
+        if let v = payload.autoMarkLowInterestRead { autoMarkLowInterestRead = v }
+        if let v = payload.lowInterestThreshold {
+            lowInterestThreshold = min(1, max(0, v))
+        }
+        if let v = payload.sortByInterestScore { sortByInterestScore = v }
+        if let v = payload.modelRoutingEnabled { modelRoutingEnabled = v }
+        if let v = payload.modelRoutingShortLimit {
+            modelRoutingShortLimit = max(100, v)
+        }
+        if let w = payload.interestWeights { interestWeights = w }
+        if let id = payload.defaultChatProviderID { defaultChatProviderID = id }
         ttsVoice = payload.ttsVoice
         if let r = payload.ttsRate { ttsRate = min(2.0, max(0.5, r)) }
         if let th = ReadingTheme(rawValue: payload.colorTheme) {
