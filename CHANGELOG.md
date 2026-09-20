@@ -30,7 +30,10 @@
 相对：`v1.3-76` / 1.3-76 成功构建
 
 ### 品牌
-- 项目更名为 **Harbor**（中文 **观澜**）：主屏显示名、导出文件名、CI IPA / Release 标题；内部 Bundle ID 与缓存目录保持兼容
+- 项目更名为 **Harbor**（中文 **观澜**）
+- 主屏显示名：中文系统 **观澜**，英文系统 **Harbor**
+- Bundle ID `com.example.Harbor`；钥匙串 / 离线缓存 / iCloud 键 / 工程目录与 Target 均改为 Harbor
+- 导出文件名、CI IPA / Release 标题：Harbor-*
 
 ### UI / 体验（Editorial 重设计实验）
 - **Design Tokens**：`AppSpacing` / `AppRadius` / `AppLayout` / `AppMotion`；`readingColumn()` 大屏居中阅读列

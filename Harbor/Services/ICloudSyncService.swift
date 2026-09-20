@@ -4,8 +4,8 @@ import Foundation
 /// 正文与缓存仍仅存本机；换机后刷新即可重新拉取文章。
 enum ICloudSyncService {
     private static let store = NSUbiquitousKeyValueStore.default
-    private static let snapshotKey = "iosrss.sync.snapshot.v1"
-    private static let localUpdatedKey = "iosrss.sync.localUpdatedAt"
+    private static let snapshotKey = "harbor.sync.snapshot.v1"
+    private static let localUpdatedKey = "harbor.sync.localUpdatedAt"
     private static let enabledKey = "iCloudSyncEnabled"
     private static let maxReadLinks = 8000
     private static let maxFavoriteLinks = 2000

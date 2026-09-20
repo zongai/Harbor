@@ -38,8 +38,8 @@ jobs:
       - name: Read app version
         id: ver
         run: |
-          MARKETING=$(grep -oE 'MARKETING_VERSION = [^;]+' IosRss.xcodeproj/project.pbxproj | head -1 | sed 's/.*= *//;s/"//g' | tr -d '[:space:]')
-          BUILD=$(grep -oE 'CURRENT_PROJECT_VERSION = [^;]+' IosRss.xcodeproj/project.pbxproj | head -1 | sed 's/.*= *//;s/"//g' | tr -d '[:space:]')
+          MARKETING=$(grep -oE 'MARKETING_VERSION = [^;]+' Harbor.xcodeproj/project.pbxproj | head -1 | sed 's/.*= *//;s/"//g' | tr -d '[:space:]')
+          BUILD=$(grep -oE 'CURRENT_PROJECT_VERSION = [^;]+' Harbor.xcodeproj/project.pbxproj | head -1 | sed 's/.*= *//;s/"//g' | tr -d '[:space:]')
           if [ -z "$MARKETING" ]; then MARKETING="0.0"; fi
           if [ -z "$BUILD" ]; then BUILD="0"; fi
           MARKETING=$(echo "$MARKETING" | tr -cd 'A-Za-z0-9._-')
@@ -57,7 +57,7 @@ jobs:
       - name: Inject GitHub build number into AppVersion
         run: |
           RUN="${{ github.run_number }}"
-          FILE="IosRss/Models/FeedModels.swift"
+          FILE="Harbor/Models/FeedModels.swift"
           if grep -q 'static let githubBuildNumber: String = ""' "$FILE"; then
             sed -i.bak "s/static let githubBuildNumber: String = \"\"/static let githubBuildNumber: String = \"${RUN}\"/" "$FILE"
             rm -f "${FILE}.bak"
@@ -71,8 +71,8 @@ jobs:
 
       - name: Build app (no signing)
         run: |
-          xcodebuild -project IosRss.xcodeproj \
-            -scheme IosRss \
+          xcodebuild -project Harbor.xcodeproj \
+            -scheme Harbor \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \

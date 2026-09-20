@@ -1,12 +1,12 @@
 import Foundation
 
 /// 离线缓存：订阅数据、Feed XML、文章全文 HTML、简单图片字节
-/// 目录：Application Support/IosRss/（历史路径，重命名为 Harbor 后仍沿用以保留离线数据）
+/// 目录：Application Support/Harbor/
 enum OfflineCache {
 
     // MARK: - Paths
 
-    private static let rootName = "IosRss"
+    private static let rootName = "Harbor"
 
     private static var rootURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -282,7 +282,7 @@ enum OfflineCache {
     static func configureURLCache() {
         let memory = 32 * 1024 * 1024
         let disk = 200 * 1024 * 1024
-        URLCache.shared = URLCache(memoryCapacity: memory, diskCapacity: disk, diskPath: "IosRssURLCache")
+        URLCache.shared = URLCache(memoryCapacity: memory, diskCapacity: disk, diskPath: "HarborURLCache")
     }
 
     // MARK: - Helpers

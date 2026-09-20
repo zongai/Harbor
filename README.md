@@ -63,7 +63,7 @@
 ## 结构
 
 ```
-IosRss/
+Harbor/
 ├── App.swift / ContentView.swift / Cloud.swift / Info.plist
 ├── Theme/AppTheme.swift
 ├── Models/
@@ -96,7 +96,7 @@ IosRss/
 - Xcode 16+ / iOS 18.0+
 - Swift 5
 
-打开 `IosRss.xcodeproj` 即可编译运行。
+打开 `Harbor.xcodeproj` 即可编译运行。
 
 ## 设置说明
 

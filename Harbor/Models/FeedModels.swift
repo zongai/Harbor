@@ -18,7 +18,7 @@ enum AppVersion {
     /// GitHub Actions run_number（优先编译期常量，其次 Info.plist）
     static var githubBuild: String? {
         if !githubBuildNumber.isEmpty { return githubBuildNumber }
-        for key in ["HarborGitHubBuild", "IosRssGitHubBuild", "GitHubBuild", "CI_BUILD_NUMBER"] {
+        for key in ["HarborGitHubBuild", "GitHubBuild", "CI_BUILD_NUMBER"] {
             if let v = Bundle.main.infoDictionary?[key] as? String, !v.isEmpty { return v }
             if let n = Bundle.main.infoDictionary?[key] as? NSNumber { return n.stringValue }
         }
@@ -771,7 +771,7 @@ struct ChatConversation: Identifiable, Codable, Hashable {
 // MARK: - Keychain (Security.framework; migrates legacy UserDefaults Base64)
 
 enum Keychain {
-    private static let service = "com.example.IosRss.keys"
+    private static let service = "com.example.Harbor.keys"
     private static let legacyPrefix = "feed_kc_"
 
     static func save(key: String, value: String) {
