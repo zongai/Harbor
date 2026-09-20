@@ -486,18 +486,9 @@ struct FeedsListView: View {
     }
 
     
-    /// 源列表展示用：默认只显示有未读的源；开启「显示已读文章」时显示全部
+    /// 源列表展示用：走 AppStore 稳定 section 快照（仅 feeds/sort/未读等关键字段变化时重建）
     private var visibleFeedSections: [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] {
-        // 已读变更后未读角标/隐藏已读源需刷新；依赖窄序号而非整源替换
-        let _ = store.articleFlagsEpoch
-        return store.feedsByGroup.compactMap { section in
-            let feeds = store.showReadArticles
-                ? section.feeds
-                : section.feeds.filter { $0.unreadCount > 0 }
-            guard !feeds.isEmpty else { return nil }
-            let sid = section.group?.id.uuidString ?? "__ungrouped__"
-            return (sid, section.group, feeds)
-        }
+        store.visibleFeedSectionsSnapshot()
     }
 
     var noUnreadState: some View {

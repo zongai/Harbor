@@ -13,6 +13,10 @@ class AppStore: AIService.Runtime {
     /// 文章已读/收藏等标志变更序号
     private(set) var articleFlagsEpoch: UInt64 = 0
 
+    /// 订阅列表 section 快照缓存（仅 token 变化时重建）
+    private var _feedSectionsCacheToken: Int = 0
+    private var _feedSectionsSnapshot: [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] = []
+
     /// 会话 UI 进度域（独立 @Observable）
     let chrome = SessionChromeState()
 
@@ -1014,6 +1018,52 @@ class AppStore: AIService.Runtime {
         })
         if !ungrouped.isEmpty || sections.isEmpty { sections.append((nil, ungrouped)) }
         return sections
+    }
+
+    /// 列表可见 section：稳定快照 + 显式依赖关键字段。
+    /// token 包含：feeds 结构/未读/标题/排序/分组、showReadArticles、sortMode、articleFlagsEpoch。
+    /// chrome 进度等不参与 token，避免刷新条牵动整表重建。
+    func visibleFeedSectionsSnapshot() -> [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] {
+        let token = feedSectionsCacheToken()
+        if token == _feedSectionsCacheToken {
+            return _feedSectionsSnapshot
+        }
+        let built: [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] = feedsByGroup.compactMap { section in
+            let items = showReadArticles
+                ? section.feeds
+                : section.feeds.filter { $0.unreadCount > 0 }
+            guard !items.isEmpty else { return nil }
+            let sid = section.group?.id.uuidString ?? "__ungrouped__"
+            return (sid, section.group, items)
+        }
+        _feedSectionsCacheToken = token
+        _feedSectionsSnapshot = built
+        return built
+    }
+
+    private func feedSectionsCacheToken() -> Int {
+        var hasher = Hasher()
+        hasher.combine(articleFlagsEpoch)
+        hasher.combine(showReadArticles)
+        hasher.combine(feedSortMode.rawValue)
+        hasher.combine(groups.count)
+        for g in groups {
+            hasher.combine(g.id)
+            hasher.combine(g.sortOrder)
+            hasher.combine(g.name)
+        }
+        hasher.combine(feeds.count)
+        for f in feeds {
+            hasher.combine(f.id)
+            hasher.combine(f.groupID)
+            hasher.combine(f.unreadCount)
+            hasher.combine(f.title)
+            hasher.combine(f.sortOrder)
+            hasher.combine(f.lastFetched?.timeIntervalSince1970 ?? 0)
+            hasher.combine(f.lastRefreshError)
+            hasher.combine(f.faviconURL)
+        }
+        return hasher.finalize()
     }
 
     /// 按当前 `feedSortMode` 对源列表排序
