@@ -52,6 +52,25 @@
 - 主屏显示名：中文 **观澜**，英文 **Harbor**
 - CI scheme 与路径同步更新
 
+## [1.3-79] — 构建中（ui-redesign-experiment）
+
+相对：`v1.3-78` / build160
+
+### 设置
+- 分区重组：账号 → 阅读 → 订阅 → AI → 数据 → 关于（对齐产品信息架构）
+- 设置内支持 OPML 导入/导出
+
+### 阅读
+- 去掉正文与页头重复的标题；表格不再双表头
+- 滚动叠字：正文改 VStack、关闭 UITextView 非连续布局、chrome 动画与滚动内容隔离
+
+### 全文抓取
+- Visual Capitalist：模糊占位/同图去重，避免清晰+模糊双图
+- Phys.org：article-main 正文提取，去掉相关推荐与 Explore further 等噪音
+
+### 评论
+- Editorial 层级、主题背景、楼中楼竖线、空/错状态精修
+
 ## [Unreleased]
 
 （自上次成功构建以来的改动，将在下次成功构建时归入正式条目。）
