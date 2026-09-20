@@ -733,14 +733,47 @@ enum ArticleContentFetcher {
                 "post_detail__content",
                 "post-detail__content"
             ]
+        } else if host == "hartpunkt.de" || host.hasSuffix(".hartpunkt.de") {
+            // TagDiv Newspaper：正文在 tdb_single_content；首个 <article> 常是登录框
+            selectors = [
+                "tdb_single_content",
+                "td-post-content",
+                "tdb-block-inner",
+                "tagdiv-type"
+            ]
+        } else if host == "spacenews.com" || host.hasSuffix(".spacenews.com") {
+            selectors = [
+                "entry-content",
+                "post-content",
+                "article-content",
+                "single-content"
+            ]
+        } else if host == "cn.nytimes.com" || host.hasSuffix(".cn.nytimes.com")
+                    || host == "nytimes.com" || host.hasSuffix(".nytimes.com") {
+            // 中文网正文分散在多个 article-body / article-paragraph
+            selectors = [
+                "article-content",
+                "article-body",
+                "story-body",
+                "article-paragraph"
+            ]
         } else {
             selectors = []
         }
+
+        // 纽约时报中文网：优先拼装段落（比整块 article 更干净）
+        if host == "cn.nytimes.com" || host.hasSuffix(".cn.nytimes.com") {
+            if let nyt = extractNYTimesCNBody(html) {
+                return nyt
+            }
+        }
+
         var best: String?
         var bestLen = 0
         for token in selectors {
             let escaped = NSRegularExpression.escapedPattern(for: token)
-            let pattern = "<(div|section)([^>]*class=[\"'][^\"']*" + escaped + "[^\"']*[\"'][^>]*)>"
+            // article 标签也参与（cn.nytimes 的 article-content 挂在 <article>）
+            let pattern = "<(div|section|article)([^>]*class=[\"'][^\"']*" + escaped + "[^\"']*[\"'][^>]*)>"
             guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
             let ns = html as NSString
             for match in regex.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
@@ -767,7 +800,98 @@ enum ArticleContentFetcher {
         if let best, host == "visualcapitalist.com" || host.hasSuffix(".visualcapitalist.com") {
             return sanitizeVisualCapitalistBody(best)
         }
+        if let best, host == "hartpunkt.de" || host.hasSuffix(".hartpunkt.de") {
+            return sanitizeHartpunktBody(best)
+        }
+        if let best, host == "spacenews.com" || host.hasSuffix(".spacenews.com") {
+            return sanitizeSpaceNewsBody(best)
+        }
+        if let best, host == "cn.nytimes.com" || host.hasSuffix(".cn.nytimes.com")
+            || host == "nytimes.com" || host.hasSuffix(".nytimes.com") {
+            return sanitizeNYTimesBody(best)
+        }
         return bestLen >= 200 ? best : nil
+    }
+
+    /// 纽约时报中文网：收集 `article-paragraph` 为标准段落，去掉广告与侧栏
+    private static func extractNYTimesCNBody(_ html: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<div[^>]*class=["'][^"']*article-paragraph[^"']*["'][^>]*>([\s\S]*?)</div>"#,
+            options: .caseInsensitive
+        ) else { return nil }
+        let ns = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        var paragraphs: [String] = []
+        for m in matches {
+            guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: html) else { continue }
+            let inner = String(html[r])
+            let text = HTMLUtils.stripTags(inner).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.count >= 8 else { continue }
+            // 跳过纯广告/导航短句
+            let lower = text.lowercased()
+            if lower == "广告" || lower == "advertisement" { continue }
+            if lower.hasPrefix("订阅") && text.count < 20 { continue }
+            paragraphs.append("<p>\(inner)</p>")
+        }
+        guard paragraphs.count >= 3 else { return nil }
+        let joined = paragraphs.joined(separator: "\n")
+        let cleaned = sanitizeNYTimesBody(joined)
+        let len = HTMLUtils.stripTags(cleaned).count
+        return len >= 200 ? cleaned : nil
+    }
+
+    private static func sanitizeNYTimesBody(_ html: String) -> String {
+        var work = truncateArticleTail(html)
+        work = removeBlocksWithClassTokens(work, tokens: [
+            "big_ad", "article-body-aside", "ad-wrapper", "ad-container",
+            "author-info", "article-footer", "newsletter", "subscribe",
+            "related-coverage", "recommended", "comments", "share-tools",
+            "gdpr", "cookie", "article-header", "multi-column-layout-aside"
+        ])
+        // 去掉仅含「广告」的节点
+        work = work.replacingOccurrences(
+            of: #"<[^>]+>\s*广告\s*</[^>]+>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        work = truncateArticleTail(work)
+        let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
+        return textLen >= 120 ? work : html
+    }
+
+    private static func sanitizeHartpunktBody(_ html: String) -> String {
+        var work = truncateArticleTail(html)
+        work = removeBlocksWithClassTokens(work, tokens: [
+            "td-a-rec", "td-a-ad", "td-adspot", "tdc-a-ad",
+            "td-post-share", "td-post-source-tags", "td-post-next-prev",
+            "td-related", "related-posts", "comments", "comment-list",
+            "td-header", "td-footer", "td-menu", "td-search",
+            "newsletter", "subscribe", "sharedaddy"
+        ])
+        // 常见广告标签「Anzeige」段落
+        work = work.replacingOccurrences(
+            of: #"<p[^>]*>\s*Anzeige\s*</p>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        work = truncateArticleTail(work)
+        let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
+        return textLen >= 120 ? work : html
+    }
+
+    private static func sanitizeSpaceNewsBody(_ html: String) -> String {
+        var work = truncateArticleTail(html)
+        work = removeBlocksWithClassTokens(work, tokens: [
+            "jp-relatedposts", "relatedposts", "related-posts",
+            "newspack-content-gifting", "newspack-reader-auth",
+            "newspack-ui__modal", "newspack-subscribe",
+            "sharedaddy", "jetpack-share", "wp-block-jetpack",
+            "newsletter", "subscribe", "recaptcha",
+            "comments-area", "entry-footer", "post-footer"
+        ])
+        work = truncateArticleTail(work)
+        let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
+        return textLen >= 120 ? work : html
     }
 
     /// Phys.org：去掉相关新闻、版权脚注、探索更多等正文外噪音
@@ -852,6 +976,20 @@ enum ArticleContentFetcher {
             "Related articles",
             "You might also like",
             "Sign up for our newsletter",
+            // SpaceNews / Newspack
+            "Gift this article",
+            "Verify your email",
+            "This site is protected by reCAPTCHA",
+            "newspack-content-gifting",
+            "jp-relatedposts",
+            // Hartpunkt / TagDiv
+            "Kommentare zu",
+            "Schreibe einen Kommentar",
+            "Ähnliche Artikel",
+            "td-related-title",
+            // NYT CN
+            "相关报道",
+            "欢迎访问纽约时报",
             "class=\"comments\"",
             "id=\"comments\"",
             "class=\"related",
@@ -884,20 +1022,59 @@ enum ArticleContentFetcher {
     }
 
     private static func extractBySemanticTags(_ html: String) -> String? {
-
+        // 收集多个 <article>/<main>，跳过登录框/弹层，取正文最长者
         for tag in ["article", "main"] {
-            if let block = extractBalancedTagContent(html, tag: tag) {
-                let textLen = HTMLUtils.stripTags(block).count
-                if textLen >= 120 { return block }
+            if let block = bestSemanticBlock(html, tag: tag) {
+                return block
             }
         }
         if let open = firstMatchRange(#"<([a-zA-Z0-9]+)[^>]*role=[\"']main[\"'][^>]*>"#, in: html),
            let tagName = matchFirst(#"<([a-zA-Z0-9]+)[^>]*role=[\"']main[\"']"#, in: html),
            let block = extractBalancedFromOpen(html, openEnd: open.upperBound, tag: tagName) {
             let textLen = HTMLUtils.stripTags(block).count
-            if textLen >= 120 { return block }
+            if textLen >= 120, !isAuthOrChromeBlock(block) { return block }
         }
         return nil
+    }
+
+    /// 在同名语义标签中选最长、且非登录/导航的块（避免 hartpunkt 等首个 article 是登录框）
+    private static func bestSemanticBlock(_ html: String, tag: String) -> String? {
+        let openPat = "<\(tag)(?:\\s[^>]*)?>"
+        guard let regex = try? NSRegularExpression(pattern: openPat, options: .caseInsensitive) else {
+            return extractBalancedTagContent(html, tag: tag).flatMap { block in
+                HTMLUtils.stripTags(block).count >= 120 && !isAuthOrChromeBlock(block) ? block : nil
+            }
+        }
+        let ns = html as NSString
+        var best: String?
+        var bestLen = 0
+        for match in regex.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+            guard let fullOpen = Range(match.range, in: html),
+                  let block = extractBalancedFromOpen(html, openEnd: fullOpen.upperBound, tag: tag) else { continue }
+            if isAuthOrChromeBlock(block) { continue }
+            let len = HTMLUtils.stripTags(block).count
+            if len > bestLen {
+                bestLen = len
+                best = block
+            }
+        }
+        return bestLen >= 120 ? best : nil
+    }
+
+    private static func isAuthOrChromeBlock(_ html: String) -> Bool {
+        let lower = html.lowercased()
+        let markers = [
+            "password", "passwort", "anmelden", "log in", "log-in", "sign in",
+            "sign-in", "forgot password", "passwort vergessen", "username",
+            "benutzername", "create account", "registrieren", "cookie consent",
+            "datenschutzerklärung", "newsletter signup"
+        ]
+        let hit = markers.filter { lower.contains($0) }.count
+        let textLen = HTMLUtils.stripTags(html).count
+        // 短块且含登录词，或登录词密集
+        if hit >= 2 && textLen < 2500 { return true }
+        if hit >= 3 && textLen < 5000 { return true }
+        return false
     }
 
     private static func extractByHeuristics(_ html: String) -> String? {
@@ -958,7 +1135,8 @@ enum ArticleContentFetcher {
                      "article__body", "body-content", "paywall-content", "rich-text", "dropcap",
                      "content-gated", "content-ungated", "post-content-main",
                      "wangEditor", "article__main", "prime__story",
-                     "js-main-post", "post_detail__content", "post-detail__content"] {
+                     "js-main-post", "post_detail__content", "post-detail__content",
+                     "tdb_single_content", "td-post-content", "article-paragraph"] {
             if openAttrs.lowercased().contains(good) { score *= 2.5; break }
         }
         if openAttrs.lowercased().contains("class=\"article\"")
