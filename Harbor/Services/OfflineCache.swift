@@ -227,7 +227,12 @@ enum OfflineCache {
         return html
     }
 
-    // MARK: - Feed XML snapshot
+    // MARK: - Feed XML snapshot + HTTP validators (ETag / Last-Modified)
+
+    struct FeedHTTPValidators: Codable, Sendable {
+        var etag: String?
+        var lastModified: String?
+    }
 
     static func saveFeedXML(url: String, data: Data) {
         guard !url.isEmpty, !data.isEmpty else { return }
@@ -239,6 +244,24 @@ enum OfflineCache {
         guard !url.isEmpty else { return nil }
         let file = feedXMLDir.appendingPathComponent(key(for: url) + ".xml")
         return try? Data(contentsOf: file)
+    }
+
+    static func saveFeedValidators(url: String, etag: String?, lastModified: String?) {
+        let norm = normalizeLink(url)
+        guard !norm.isEmpty else { return }
+        let v = FeedHTTPValidators(etag: etag, lastModified: lastModified)
+        let file = feedXMLDir.appendingPathComponent(key(for: norm) + ".validators.json")
+        if let data = try? JSONEncoder().encode(v) {
+            try? data.write(to: file, options: [.atomic])
+        }
+    }
+
+    static func loadFeedValidators(url: String) -> FeedHTTPValidators? {
+        let norm = normalizeLink(url)
+        guard !norm.isEmpty else { return nil }
+        let file = feedXMLDir.appendingPathComponent(key(for: norm) + ".validators.json")
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(FeedHTTPValidators.self, from: data)
     }
 
     // MARK: - Image bytes（正文配图等）

@@ -1245,19 +1245,28 @@ class AppStore: AIService.Runtime {
                 feedTitle: feedTitle,
                 cacheKeyURLString: urlStr
             )
-            applyParsedFeed(
-                data: payload.data,
-                preParsedArticles: payload.articles,
-                feedID: feedID,
-                urlStr: urlStr,
-                persist: persist
-            )
-            if payload.upgradedToHTTPS,
-               let i = feeds.firstIndex(where: { $0.id == feedID }) {
-                feeds[i].url = payload.resolvedURL.absoluteString
-                if persist { saveToStorage() }
+            if payload.notModified {
+                // 304：源站无更新，跳过 merge，仅刷新时间戳
+                if let i = feeds.firstIndex(where: { $0.id == feedID }) {
+                    feeds[i].lastFetched = Date()
+                }
+                clearFeedRefreshError(feedID, persist: persist)
+                if persist { scheduleFeedsPersist() }
+            } else {
+                applyParsedFeed(
+                    data: payload.data,
+                    preParsedArticles: payload.articles,
+                    feedID: feedID,
+                    urlStr: urlStr,
+                    persist: persist
+                )
+                if payload.upgradedToHTTPS,
+                   let i = feeds.firstIndex(where: { $0.id == feedID }) {
+                    feeds[i].url = payload.resolvedURL.absoluteString
+                    if persist { saveToStorage() }
+                }
+                clearFeedRefreshError(feedID, persist: persist)
             }
-            clearFeedRefreshError(feedID, persist: persist)
             return nil
         } catch {
             if let cached = OfflineCache.loadFeedXML(url: urlStr) {
@@ -1569,18 +1578,25 @@ class AppStore: AIService.Runtime {
                     refreshProgressTitle = title
                     switch outcome {
                     case .success(let payload):
-                        applyParsedFeed(
-                            data: payload.data,
-                            preParsedArticles: payload.articles,
-                            feedID: id,
-                            urlStr: feeds.first(where: { $0.id == id })?.url ?? "",
-                            persist: false
-                        )
-                        if payload.upgradedToHTTPS,
-                           let i = feeds.firstIndex(where: { $0.id == id }) {
-                            feeds[i].url = payload.resolvedURL.absoluteString
+                        if payload.notModified {
+                            if let i = feeds.firstIndex(where: { $0.id == id }) {
+                                feeds[i].lastFetched = Date()
+                            }
+                            clearFeedRefreshError(id, persist: false)
+                        } else {
+                            applyParsedFeed(
+                                data: payload.data,
+                                preParsedArticles: payload.articles,
+                                feedID: id,
+                                urlStr: feeds.first(where: { $0.id == id })?.url ?? "",
+                                persist: false
+                            )
+                            if payload.upgradedToHTTPS,
+                               let i = feeds.firstIndex(where: { $0.id == id }) {
+                                feeds[i].url = payload.resolvedURL.absoluteString
+                            }
+                            clearFeedRefreshError(id, persist: false)
                         }
-                        clearFeedRefreshError(id, persist: false)
                     case .failure(let error):
                         let urlStr = feeds.first(where: { $0.id == id })?.url ?? ""
                         if let cached = OfflineCache.loadFeedXML(url: urlStr), !cached.isEmpty {

@@ -233,6 +233,12 @@ struct FeedsListView: View {
                 guard !store.chrome.isRefreshingAll else { return }
                 Task { await store.refreshAll() }
             }
+            .onDisappear {
+                // 离开订阅列表：取消进行中的全量刷新，释放网络与限流槽位
+                if store.chrome.isRefreshingAll {
+                    store.cancelRefreshAll()
+                }
+            }
             .safeAreaInset(edge: .top) {
                 // 独立子视图：只观察 chrome，刷新进度不拖着整页列表 body 重算
                 FeedRefreshProgressBar()

@@ -12,8 +12,35 @@ enum FeedRefreshService {
             cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
             return URLSession(configuration: cfg)
         }()
-        /// 全量刷新时的并行源数量
-        static let refreshConcurrency = 8
+        /// 全量刷新时的并行源数量（与 Gate 协同，避免打爆源站）
+        static let refreshConcurrency = 6
+    }
+
+    /// 全局限流：同时进行的 Feed HTTP 请求上限（源站友好）
+    actor FeedRequestGate {
+        static let shared = FeedRequestGate()
+        private let maxConcurrent = 5
+        private var running = 0
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func enter() async {
+            if running < maxConcurrent {
+                running += 1
+                return
+            }
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                waiters.append(cont)
+            }
+            running += 1
+        }
+
+        func leave() {
+            running = max(0, running - 1)
+            if !waiters.isEmpty {
+                let cont = waiters.removeFirst()
+                cont.resume()
+            }
+        }
     }
 
     /// 带可读说明的拉取错误（供列表展示）
@@ -54,21 +81,58 @@ enum FeedRefreshService {
         }
     }
 
-    nonisolated static func fetchFeedData(from url: URL) async throws -> Data {
+
+    struct FeedFetchResult: Sendable {
+        let data: Data
+        let etag: String?
+        let lastModified: String?
+        /// 304 Not Modified：可沿用本地 XML
+        let notModified: Bool
+    }
+
+    /// 条件请求 + 全局限流。源站不支持 ETag/Last-Modified 时退化为普通 GET。
+    nonisolated static func fetchFeedData(
+        from url: URL,
+        etag: String? = nil,
+        lastModified: String? = nil
+    ) async throws -> FeedFetchResult {
         if RSSHubSupport.isRSSHubURL(url) {
+            await FeedRequestGate.shared.enter()
+            defer { Task { await FeedRequestGate.shared.leave() } }
             let (data, _) = try await FeedDiscovery.fetchRSSHubFeed(from: url)
-            return data
+            return FeedFetchResult(data: data, etag: nil, lastModified: nil, notModified: false)
         }
+
+        await FeedRequestGate.shared.enter()
+        defer { Task { await FeedRequestGate.shared.leave() } }
+
         var request = URLRequest(url: url, timeoutInterval: 12)
         request.setValue(
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
             forHTTPHeaderField: "User-Agent"
         )
-        request.setValue("application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.8",
+            forHTTPHeaderField: "Accept"
+        )
+        // 条件请求（源站不认则忽略，仍返回 200）
+        if let etag, !etag.isEmpty {
+            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+        }
+        if let lastModified, !lastModified.isEmpty {
+            request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
+        }
         request.cachePolicy = .reloadIgnoringLocalCacheData
+
         let (data, response) = try await HTTP.session.data(for: request)
         let host = url.host
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+        let http = response as? HTTPURLResponse
+        let code = http?.statusCode ?? 0
+
+        if code == 304 {
+            return FeedFetchResult(data: Data(), etag: etag, lastModified: lastModified, notModified: true)
+        }
+        if let http, !(200...299).contains(http.statusCode) {
             throw FetchError.httpStatus(code: http.statusCode, host: host)
         }
         if data.isEmpty {
@@ -77,40 +141,50 @@ enum FeedRefreshService {
         if RSSHubSupport.looksLikeCloudflareOrHTMLGate(data) {
             throw FetchError.cloudflareOrGate(host: host)
         }
-        return data
+        let newEtag = http?.value(forHTTPHeaderField: "ETag")
+        let newLM = http?.value(forHTTPHeaderField: "Last-Modified")
+        return FeedFetchResult(data: data, etag: newEtag, lastModified: newLM, notModified: false)
     }
 
+    /// 兼容旧调用：只要 Data
+    nonisolated static func fetchFeedData(from url: URL) async throws -> Data {
+        let r = try await fetchFeedData(from: url, etag: nil, lastModified: nil)
+        if r.notModified { return Data() }
+        return r.data
+    }
 
     /// 网络拉取 + XML 解析结果（值类型，跨隔离域安全传递）
     struct ParsedFeedPayload: Sendable {
         let data: Data
         let articles: [Article]
-        /// 实际成功的请求 URL（可能从 http 升到 https）
         let resolvedURL: URL
-        /// 是否改写了协议（调用方可将 feed.url 更新为 https）
         let upgradedToHTTPS: Bool
+        /// 304：无新数据，调用方应跳过 merge 或仅更新 lastFetched
+        let notModified: Bool
     }
 
-    /// 拉取 + 解析在 **nonisolated** 上下文执行（不占 MainActor）。
-    /// 调用方（AppStore @MainActor）在 `await` 返回后只做 `applyParsedFeed` 合并。
-    /// 入参均为值拷贝（URL/UUID/String/Data），出参 Article 为 Sendable 值类型。
+    /// 拉取 + 解析在 nonisolated 执行；条件请求 + 限流；主线程只 merge
     nonisolated static func fetchAndParse(
         url: URL,
         feedID: UUID,
         feedTitle: String,
         cacheKeyURLString: String
     ) async throws -> ParsedFeedPayload {
-        // 显式值拷贝，避免意外共享引用
         let requestSeed = url
         let id = feedID
         let title = feedTitle
         let cacheKey = cacheKeyURLString
+        let validators = OfflineCache.loadFeedValidators(url: cacheKey)
 
         var requestURL = requestSeed
         var upgraded = false
-        let data: Data
+        let fetch: FeedFetchResult
         do {
-            data = try await fetchFeedData(from: requestURL)
+            fetch = try await fetchFeedData(
+                from: requestURL,
+                etag: validators?.etag,
+                lastModified: validators?.lastModified
+            )
         } catch let firstError {
             guard requestURL.scheme?.lowercased() == "http",
                   var comps = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else {
@@ -120,27 +194,41 @@ enum FeedRefreshService {
             guard let httpsURL = comps.url, NetworkURLPolicy.isAllowed(httpsURL) else {
                 throw firstError
             }
-            data = try await fetchFeedData(from: httpsURL)
+            fetch = try await fetchFeedData(
+                from: httpsURL,
+                etag: validators?.etag,
+                lastModified: validators?.lastModified
+            )
             requestURL = httpsURL
             upgraded = true
         }
-        // 磁盘写与解析均在非主线程隔离外完成
-        OfflineCache.saveFeedXML(url: cacheKey, data: data)
-        let articles = FeedParser.parse(data: data, feedID: id, feedTitle: title)
+
+        if fetch.notModified {
+            let cached = OfflineCache.loadFeedXML(url: cacheKey) ?? Data()
+            let articles = cached.isEmpty ? [] : FeedParser.parse(data: cached, feedID: id, feedTitle: title)
+            return ParsedFeedPayload(
+                data: cached,
+                articles: articles,
+                resolvedURL: requestURL,
+                upgradedToHTTPS: upgraded,
+                notModified: true
+            )
+        }
+
+        OfflineCache.saveFeedXML(url: cacheKey, data: fetch.data)
+        OfflineCache.saveFeedValidators(url: cacheKey, etag: fetch.etag, lastModified: fetch.lastModified)
+        let articles = FeedParser.parse(data: fetch.data, feedID: id, feedTitle: title)
         return ParsedFeedPayload(
-            data: data,
+            data: fetch.data,
             articles: articles,
             resolvedURL: requestURL,
-            upgradedToHTTPS: upgraded
+            upgradedToHTTPS: upgraded,
+            notModified: false
         )
     }
 
-    /// 仅解析离线 XML（nonisolated）；返回值拷贝回主线程再 merge
+    /// 仅解析离线 XML（nonisolated）
     nonisolated static func parseOffline(data: Data, feedID: UUID, feedTitle: String) async -> [Article] {
-        let payload = data
-        let id = feedID
-        let title = feedTitle
-        return FeedParser.parse(data: payload, feedID: id, feedTitle: title)
+        FeedParser.parse(data: data, feedID: feedID, feedTitle: feedTitle)
     }
 }
-
