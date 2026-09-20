@@ -67,20 +67,15 @@ struct ArticleListView: View {
 
     var body: some View {
         List {
-            // Editorial hierarchy: first article as Featured, rest as regular rows
-            ForEach(Array(articles.enumerated()), id: \.element.id) { index, article in
+            ForEach(articles) { article in
                 NavigationLink(value: article) {
-                    if index == 0 {
-                        FeaturedArticleRow(article: article, showTranslation: showAllTranslations)
-                    } else {
-                        ArticleRow(article: article, showTranslation: showAllTranslations)
-                    }
+                    ArticleRow(article: article, showTranslation: showAllTranslations)
                 }
                 // 仅用 id + 已读 + 是否显示译文；译文内容变化由 ArticleRow 读最新 article 字段刷新
                 // （避免把整段译文塞进 id 导致行身份频繁失效、List 复用失败）
-                .id("\(article.id.uuidString)-\(article.isRead)-\(showAllTranslations)-\(article.translatedTitle == nil ? 0 : 1)-\(article.translatedSummary == nil ? 0 : 1)-\(index == 0 ? "f" : "r")")
+                .id("\(article.id.uuidString)-\(article.isRead)-\(showAllTranslations)-\(article.translatedTitle == nil ? 0 : 1)-\(article.translatedSummary == nil ? 0 : 1)")
                 .listRowInsets(EdgeInsets(
-                    top: index == 0 ? AppSpacing.sm : (index == 1 ? AppSpacing.xs : 0),
+                    top: 0,
                     leading: AppLayout.listHorizontalPadding,
                     bottom: 0,
                     trailing: AppLayout.listHorizontalPadding
@@ -587,117 +582,6 @@ private struct ListTranslationJob {
     let text: String
 }
 
-// MARK: - Featured Article Row (editorial hierarchy — first item)
-
-/// Larger visual weight for the lead story in a feed list.
-struct FeaturedArticleRow: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.theme) private var theme
-    let article: Article
-    let showTranslation: Bool
-
-    private var live: Article {
-        let _ = store.articleFlags.generation(of: article.id)
-        return store.articleSnapshot(id: article.id, feedID: article.feedID) ?? article
-    }
-
-    private var displayTitle: String {
-        let raw: String
-        if showTranslation, let t = live.translatedTitle, !t.isEmpty { raw = t }
-        else { raw = live.title }
-        return raw.contains("<") ? HTMLUtils.plainText(raw) : raw
-    }
-
-    private var displaySummary: String {
-        let raw: String
-        if showTranslation, let t = live.translatedSummary, !t.isEmpty { raw = t }
-        else { raw = live.summary }
-        return raw.contains("<") ? HTMLUtils.plainText(raw) : raw
-    }
-
-    var body: some View {
-        let item = live
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: AppSpacing.sm) {
-                // Category / source
-                Text(item.feedTitle.uppercased())
-                    .font(AppTypography.articleCategory(size: max(11, store.listTitleFontSize - 6)))
-                    .tracking(0.9)
-                    .foregroundStyle(theme.muted)
-
-                // Large title
-                HStack(alignment: .top, spacing: AppSpacing.xs) {
-                    Text(displayTitle)
-                        .font(AppTypography.font(
-                            size: store.listTitleFontSize + 5,
-                            weight: item.isRead ? .medium : .bold
-                        ))
-                        .tracking(AppTypography.displayTracking * 0.7)
-                        .lineSpacing(3)
-                        .foregroundStyle(item.isRead ? theme.muted : theme.text)
-                        .lineLimit(4)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if item.isFavorite {
-                        Image(systemName: "star.fill")
-                            .font(AppTypography.font(size: max(12, store.listTitleFontSize - 4), weight: .semibold))
-                            .foregroundStyle(.orange)
-                            .padding(.top, 4)
-                            .accessibilityLabel("已收藏")
-                    }
-                }
-
-                if showTranslation && store.titleDisplayMode == .bilingual && item.translatedTitle != nil {
-                    Text(item.title)
-                        .font(AppTypography.listSummary(size: max(13, store.listTitleFontSize - 2)))
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(2)
-                }
-
-                // Longer excerpt
-                if !displaySummary.isEmpty {
-                    Text(displaySummary)
-                        .font(AppTypography.listSummary(size: store.listSummaryFontSize + 1))
-                        .foregroundStyle(theme.muted)
-                        .lineSpacing(3)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                // Metadata — lowest weight
-                HStack(spacing: 6) {
-                    if !item.relativeTime.isEmpty {
-                        Text(item.relativeTime)
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted)
-                    }
-                    if store.smartInterestFilterEnabled, let score = item.interestScore {
-                        Text("·")
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted.opacity(0.45))
-                        Text(String(format: "%.0f%%", score * 100))
-                            .font(AppTypography.caption())
-                            .foregroundStyle(score < store.lowInterestThreshold ? Color.orange : theme.muted)
-                    }
-                }
-                .padding(.top, AppSpacing.xxs)
-            }
-            .padding(.top, AppSpacing.lg)
-            .padding(.bottom, AppSpacing.xl)
-            Divider()
-                .opacity(0.4)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel({
-            var parts = ["头条", displayTitle]
-            if !displaySummary.isEmpty { parts.append(String(displaySummary.prefix(100))) }
-            if !item.relativeTime.isEmpty { parts.append(item.relativeTime) }
-            if item.isFavorite { parts.append("已收藏") }
-            return parts.joined(separator: "，")
-        }())
-        .accessibilityHint(item.isRead ? "已读" : "未读")
-    }
-}
-
 // MARK: - Article Row
 
 struct ArticleRow: View {
@@ -732,7 +616,7 @@ struct ArticleRow: View {
     var body: some View {
         let item = live
         VStack(alignment: .leading, spacing: 0) {
-            // Editorial order: Title → Excerpt → Metadata
+            // Title → Excerpt → Metadata
             VStack(alignment: .leading, spacing: AppSpacing.xs) {
                 // Title
                 HStack(alignment: .top, spacing: AppSpacing.xs) {
@@ -815,7 +699,7 @@ struct ArticleRow: View {
                         .lineLimit(1)
                 }
             }
-            .padding(.vertical, AppSpacing.md + 2)
+            .padding(.vertical, AppSpacing.md)
             Divider()
                 .opacity(0.4)
         }
