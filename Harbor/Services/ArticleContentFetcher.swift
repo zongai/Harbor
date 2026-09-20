@@ -53,11 +53,17 @@ enum ArticleContentFetcher {
         }
 
         // 非强制：仅复用「足够长」的缓存；过短/空壳（历史误存）强制重抓
+        // 图表站若缓存无任何 <img>，视为不完整，继续抓取以补主图
         if !forceReload,
            let cached = OfflineCache.loadArticleHTML(link: urlString), !cached.isEmpty {
             let len = HTMLUtils.stripTags(cached).count
+            let imgCount = cached.lowercased().components(separatedBy: "<img").count - 1
             if len >= 400 {
-                return Result(title: nil, contentHTML: cached, textLength: len)
+                if isWordPressChartHost(url.host), imgCount < 1 {
+                    // fall through — 补图
+                } else {
+                    return Result(title: nil, contentHTML: cached, textLength: len)
+                }
             }
         }
 
@@ -85,11 +91,17 @@ enum ArticleContentFetcher {
 
         // WordPress REST（Visual Capitalist / SpaceNews 等）：比前端 HTML 更稳
         if prefersWordPressREST(url.host),
-           let wp = await fetchWordPressBySlug(pageURL: url) {
+           var wp = await fetchWordPressBySlug(pageURL: url) {
+            if isWordPressChartHost(url.host) {
+                wp = Extracted(
+                    title: wp.title,
+                    content: await supplementChartImages(content: wp.content, pageURL: url)
+                )
+            }
             OfflineCache.saveArticleHTML(link: urlString, html: wp.content)
             let len = HTMLUtils.stripTags(wp.content).count
-            if len >= 80 {
-                return Result(title: wp.title, contentHTML: wp.content, textLength: len)
+            if len >= 80 || wp.content.lowercased().contains("<img") {
+                return Result(title: wp.title, contentHTML: wp.content, textLength: max(len, 80))
             }
         }
 
@@ -158,6 +170,13 @@ enum ArticleContentFetcher {
             }
         }
 
+        // 图表站：正文无图时用 oEmbed / 页内 meta / JSON-LD 补主图
+        if isWordPressChartHost(url.host) {
+            let withImgs = await supplementChartImages(content: extracted.content, pageURL: url, pageHTML: html)
+            extracted = Extracted(title: extracted.title, content: withImgs)
+            plainLen = HTMLUtils.stripTags(extracted.content).count
+        }
+
         if plainLen < 80 {
             // 过短也可能是挑战页漏检，再扫一次常见 CF 文案
             if isCloudflareChallenge(html: html, response: response) {
@@ -167,6 +186,91 @@ enum ArticleContentFetcher {
         }
         OfflineCache.saveArticleHTML(link: urlString, html: extracted.content)
         return Result(title: extracted.title, contentHTML: extracted.content, textLength: plainLen)
+    }
+
+    /// 图表站正文缺图：oEmbed 缩略图 + 页内 meta/JSON-LD
+    private static func supplementChartImages(content: String, pageURL: URL, pageHTML: String? = nil) async -> String {
+        var work = content
+        if work.lowercased().components(separatedBy: "<img").count - 1 >= 1 {
+            return work
+        }
+        if let pageHTML, !pageHTML.isEmpty {
+            work = ensureChartImages(work, pageHTML: pageHTML, baseURL: pageURL)
+            if work.lowercased().components(separatedBy: "<img").count - 1 >= 1 {
+                return work
+            }
+        }
+        if let thumb = await fetchOEmbedThumbnail(pageURL: pageURL) {
+            return "<p><img src=\"\(thumb)\" alt=\"\"></p>\n" + work
+        }
+        // 再试一次 WP，只取特色图字段
+        if let featured = await fetchWordPressFeaturedOnly(pageURL: pageURL) {
+            return "<p><img src=\"\(featured)\" alt=\"\"></p>\n" + work
+        }
+        return work
+    }
+
+    private static func fetchOEmbedThumbnail(pageURL: URL) async -> String? {
+        guard var comps = URLComponents(url: pageURL, resolvingAgainstBaseURL: false) else { return nil }
+        comps.path = "/wp-json/oembed/1.0/embed"
+        comps.queryItems = [URLQueryItem(name: "url", value: pageURL.absoluteString)]
+        comps.fragment = nil
+        guard let api = comps.url else { return nil }
+        var request = URLRequest(url: api, timeoutInterval: 12)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue(pageURL.absoluteString, forHTTPHeaderField: "Referer")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                return nil
+            }
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            if let thumb = obj["thumbnail_url"] as? String, !thumb.isEmpty {
+                return thumb
+            }
+            // 部分主题把图放在 html 里
+            if let html = obj["html"] as? String,
+               let src = matchFirst(#"<img[^>]+src=["']([^"']+)["']"#, in: html) {
+                return src
+            }
+        } catch { return nil }
+        return nil
+    }
+
+    private static func fetchWordPressFeaturedOnly(pageURL: URL) async -> String? {
+        guard let extracted = await fetchWordPressBySlug(pageURL: pageURL) else { return nil }
+        // 正文里已有图时取第一张
+        if let first = imageSrcs(in: extracted.content).first { return first }
+        return nil
+    }
+
+    /// 从 JSON-LD / 嵌套字典中收集图片 URL
+    private static func collectImageURLs(fromJSON obj: Any) -> [String] {
+        var out: [String] = []
+        if let s = obj as? String, s.hasPrefix("http") {
+            let low = s.lowercased()
+            if low.contains(".jpg") || low.contains(".jpeg") || low.contains(".png")
+                || low.contains(".webp") || low.contains("uploads") || low.contains("wp-content") {
+                out.append(s)
+            }
+        } else if let arr = obj as? [Any] {
+            for item in arr { out.append(contentsOf: collectImageURLs(fromJSON: item)) }
+        } else if let dict = obj as? [String: Any] {
+            for key in ["image", "thumbnailUrl", "thumbnail", "contentUrl", "url"] {
+                if let v = dict[key] {
+                    out.append(contentsOf: collectImageURLs(fromJSON: v))
+                }
+            }
+            // 常见 BlogPosting: image 可为 { "@type": "ImageObject", "url": "..." }
+            if let img = dict["image"] as? [String: Any], let u = img["url"] as? String {
+                out.append(u)
+            }
+        }
+        return out
     }
 
     /// 识别 Cloudflare / 常见人机验证页（正文抓取无法完成）
@@ -789,6 +893,21 @@ enum ArticleContentFetcher {
             for m in re.matches(in: pageHTML, range: NSRange(location: 0, length: ns.length)).prefix(16) {
                 if m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: pageHTML) {
                     candidates.append(String(pageHTML[r]))
+                }
+            }
+        }
+        // JSON-LD image
+        if let re = try? NSRegularExpression(
+            pattern: #"<script[^>]+type=["']application/ld\+json["'][^>]*>([\s\S]*?)</script>"#,
+            options: .caseInsensitive
+        ) {
+            let ns = pageHTML as NSString
+            for m in re.matches(in: pageHTML, range: NSRange(location: 0, length: ns.length)).prefix(6) {
+                guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: pageHTML) else { continue }
+                let json = String(pageHTML[r])
+                if let data = json.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) {
+                    candidates.append(contentsOf: Self.collectImageURLs(fromJSON: obj))
                 }
             }
         }

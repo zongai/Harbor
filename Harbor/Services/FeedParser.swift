@@ -193,6 +193,32 @@ enum FeedParser {
               let range = Range(match.range(at: 1), in: xml) else { return nil }
         return String(xml[range]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// 若正文尚无 <img>，把 media:content / media:thumbnail / enclosure 图片插到文首
+    private static func injectFeedMediaImage(into content: String, itemXML: String) -> String {
+        if content.lowercased().contains("<img") { return content }
+        var candidates: [String] = []
+        if let u = extractAttrHref(tagName: "media:content", from: itemXML) { candidates.append(u) }
+        if let u = extractAttrHref(tagName: "media:thumbnail", from: itemXML) { candidates.append(u) }
+        // <enclosure url="..." type="image/..." />
+        if let re = try? NSRegularExpression(
+            pattern: #"<enclosure\b[^>]*url=["']([^"']+)["'][^>]*>"#,
+            options: .caseInsensitive
+        ) {
+            let ns = itemXML as NSString
+            for m in re.matches(in: itemXML, range: NSRange(location: 0, length: ns.length)).prefix(3) {
+                if m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: itemXML) {
+                    candidates.append(String(itemXML[r]))
+                }
+            }
+        }
+        for raw in candidates {
+            let u = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard looksLikeImageURL(u) || u.lowercased().contains("wp-content/uploads") else { continue }
+            return "<p><img src=\"\(u)\" alt=\"\"></p>\n" + content
+        }
+        return content
+    }
     private static func firstTopLevelBlock(_ xml: String, tag: String) -> String? {
         extractBlocks(from: xml, tag: tag).first
     }
@@ -203,7 +229,9 @@ enum FeedParser {
             guard !title.isEmpty else { return nil }
             let link = extractTag("link", from: block) ?? extractTag("guid", from: block) ?? ""
             let description = extractTag("description", from: block) ?? extractTag("summary", from: block) ?? ""
-            let content = extractTag("content:encoded", from: block) ?? extractTag("content", from: block) ?? description
+            var content = extractTag("content:encoded", from: block) ?? extractTag("content", from: block) ?? description
+            // 图表站 RSS 常无正文图，但有 media:content / enclosure 主图
+            content = injectFeedMediaImage(into: content.isEmpty ? description : content, itemXML: block)
             let pubDate = extractTag("pubDate", from: block) ?? extractTag("published", from: block) ?? ""
             let commentsRaw = extractTag("comments", from: block)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -222,7 +250,8 @@ enum FeedParser {
             guard !title.isEmpty else { return nil }
             let link = extractLinkHref(from: block)
             let summary = extractTag("summary", from: block) ?? ""
-            let content = extractTag("content", from: block) ?? summary
+            var content = extractTag("content", from: block) ?? summary
+            content = injectFeedMediaImage(into: content.isEmpty ? summary : content, itemXML: block)
             let published = extractTag("published", from: block) ?? extractTag("updated", from: block) ?? ""
             return Article(id: UUID(), feedID: feedID, feedTitle: feedTitle, title: stripHTML(title), link: link,
                 summary: String(stripHTML(summary).prefix(200)), content: content.isEmpty ? summary : content,
