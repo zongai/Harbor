@@ -71,7 +71,7 @@
 ### 评论
 - Editorial 层级、主题背景、楼中楼竖线、空/错状态精修
 
-## [1.3-80] — 构建中（ui-redesign-experiment）
+## [1.3-80] — 构建成功 (build163 / Actions 35487359347) · 分支 ui-redesign-experiment
 
 相对：`v1.3-79` / build162
 
