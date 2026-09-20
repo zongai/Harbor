@@ -765,6 +765,9 @@ class AppStore: AIService.Runtime {
         var explainPrompt: String
         var readRetentionDays: Int
         var fullContentCacheDays: Int
+        /// 可选：旧备份无此字段时保持导入端现状
+        var fullContentURLPrefixEnabled: Bool?
+        var fullContentURLPrefix: String?
         var ttsVoice: String
         var ttsRate: Double?
         var colorTheme: String
@@ -782,7 +785,7 @@ class AppStore: AIService.Runtime {
 
     func exportSettingsJSON(includeSecrets: Bool = false) throws -> Data {
         let payload = SettingsExportPayload(
-            version: 1,
+            version: 2,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
             listSummaryFontSize: listSummaryFontSize,
@@ -798,6 +801,8 @@ class AppStore: AIService.Runtime {
             explainPrompt: explainPrompt,
             readRetentionDays: readRetentionDays,
             fullContentCacheDays: fullContentCacheDays,
+            fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
+            fullContentURLPrefix: fullContentURLPrefix,
             ttsVoice: ttsVoice,
             ttsRate: ttsRate,
             colorTheme: colorTheme.rawValue,
@@ -840,6 +845,12 @@ class AppStore: AIService.Runtime {
         explainPrompt = payload.explainPrompt
         readRetentionDays = payload.readRetentionDays
         fullContentCacheDays = payload.fullContentCacheDays
+        if let enabled = payload.fullContentURLPrefixEnabled {
+            fullContentURLPrefixEnabled = enabled
+        }
+        if let prefix = payload.fullContentURLPrefix {
+            fullContentURLPrefix = prefix
+        }
         ttsVoice = payload.ttsVoice
         if let r = payload.ttsRate { ttsRate = min(2.0, max(0.5, r)) }
         if let th = ReadingTheme(rawValue: payload.colorTheme) {
