@@ -106,7 +106,10 @@
 
 ## [Unreleased]
 
-（自上次成功构建以来的改动，将在下次成功构建时归入正式条目。）
+### Added
+- Adopted the MIT License (Copyright (c) 2026 zongai). See [LICENSE](LICENSE).
+
+（自上次成功构建以来的其它改动，将在下次成功构建时归入正式条目。）
 
 ---
 

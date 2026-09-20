@@ -131,4 +131,6 @@ Harbor/
 
 ## License
 
-按仓库内声明使用。
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+Copyright (c) 2026 zongai
