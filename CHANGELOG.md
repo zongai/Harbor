@@ -42,6 +42,16 @@
 - **搜索 / 评论 / 对话 / 添加订阅 / 设置**：对齐 tokens 与主题背景（`appFormChrome`）
 - **无障碍**：Dynamic Type（UIFontMetrics）；Reduce Motion；列表合并 VoiceOver 标签；约 44pt 点击区
 
+## [1.3-78] — 构建中（ui-redesign-experiment）
+
+相对：`v1.3-77` / build159
+
+### 品牌（完整重命名）
+- 工程 / Target / 源码目录：`Harbor`
+- Bundle ID `com.example.Harbor`；钥匙串、离线缓存、URLCache、iCloud 键全部改为 Harbor
+- 主屏显示名：中文 **观澜**，英文 **Harbor**
+- CI scheme 与路径同步更新
+
 ## [Unreleased]
 
 （自上次成功构建以来的改动，将在下次成功构建时归入正式条目。）
