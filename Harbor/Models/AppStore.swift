@@ -3,7 +3,6 @@ import SwiftUI
 
 @Observable
 @MainActor
-@dynamicMemberLookup
 class AppStore: AIService.Runtime {
     // MARK: - 订阅数据域（与 SessionChrome 分观察）
     var feeds: [RSSFeed] = []
@@ -20,28 +19,237 @@ class AppStore: AIService.Runtime {
     /// 用户偏好 / 引擎配置域（独立 @Observable）
     let settings = SettingsStore()
 
-    subscript<T>(dynamicMember keyPath: WritableKeyPath<SettingsStore, T>) -> T {
-        get { settings[keyPath: keyPath] }
-        set { settings[keyPath: keyPath] = newValue }
+    // MARK: - Settings 域桥接（存储在 SettingsStore，兼容 AppStore 内访问与协议）
+    var fontSize: Double {
+        get { settings.fontSize }
+        set { settings.fontSize = newValue }
     }
 
-    // AIService.Runtime 协议见证（不可仅靠 dynamicMemberLookup）
-    var aiOutputLanguage: AppLanguage {
-        get { settings.aiOutputLanguage }
-        set { settings.aiOutputLanguage = newValue }
+    var listTitleFontSize: Double {
+        get { settings.listTitleFontSize }
+        set { settings.listTitleFontSize = newValue }
     }
+
+    var listSummaryFontSize: Double {
+        get { settings.listSummaryFontSize }
+        set { settings.listSummaryFontSize = newValue }
+    }
+
+    var readerTitleFontSize: Double {
+        get { settings.readerTitleFontSize }
+        set { settings.readerTitleFontSize = newValue }
+    }
+
+    var aiSummaryFontSize: Double {
+        get { settings.aiSummaryFontSize }
+        set { settings.aiSummaryFontSize = newValue }
+    }
+
+    var feedTitleFontSize: Double {
+        get { settings.feedTitleFontSize }
+        set { settings.feedTitleFontSize = newValue }
+    }
+
+    var groupTitleFontSize: Double {
+        get { settings.groupTitleFontSize }
+        set { settings.groupTitleFontSize = newValue }
+    }
+
+    var titleDisplayMode: TitleDisplayMode {
+        get { settings.titleDisplayMode }
+        set { settings.titleDisplayMode = newValue }
+    }
+
+    var defaultTranslationEngine: TranslationEngine {
+        get { settings.defaultTranslationEngine }
+        set { settings.defaultTranslationEngine = newValue }
+    }
+
+    var translationEngineChain: [TranslationEngine] {
+        get { settings.translationEngineChain }
+        set { settings.translationEngineChain = newValue }
+    }
+
+    var aiProviders: [AIProvider] {
+        get { settings.aiProviders }
+        set { settings.aiProviders = newValue }
+    }
+
     var defaultSummaryProviderID: UUID? {
         get { settings.defaultSummaryProviderID }
         set { settings.defaultSummaryProviderID = newValue }
     }
+
+    var defaultTranslationProviderID: UUID? {
+        get { settings.defaultTranslationProviderID }
+        set { settings.defaultTranslationProviderID = newValue }
+    }
+
     var defaultExplainProviderID: UUID? {
         get { settings.defaultExplainProviderID }
         set { settings.defaultExplainProviderID = newValue }
     }
+
+    var aiBlacklistTerms: [String] {
+        get { settings.aiBlacklistTerms }
+        set { settings.aiBlacklistTerms = newValue }
+    }
+
+    var articleBlacklistTerms: [String] {
+        get { settings.articleBlacklistTerms }
+        set { settings.articleBlacklistTerms = newValue }
+    }
+
+    var aiBlacklistFallbackProviderID: UUID? {
+        get { settings.aiBlacklistFallbackProviderID }
+        set { settings.aiBlacklistFallbackProviderID = newValue }
+    }
+
+    var showReadArticles: Bool {
+        get { settings.showReadArticles }
+        set { settings.showReadArticles = newValue }
+    }
+
+    var translationPrompt: String {
+        get { settings.translationPrompt }
+        set { settings.translationPrompt = newValue }
+    }
+
+    var summaryPrompt: String {
+        get { settings.summaryPrompt }
+        set { settings.summaryPrompt = newValue }
+    }
+
+    var explainPrompt: String {
+        get { settings.explainPrompt }
+        set { settings.explainPrompt = newValue }
+    }
+
+    var readRetentionDays: Int {
+        get { settings.readRetentionDays }
+        set { settings.readRetentionDays = newValue }
+    }
+
+    var fullContentCacheDays: Int {
+        get { settings.fullContentCacheDays }
+        set { settings.fullContentCacheDays = newValue }
+    }
+
+    var fullContentURLPrefixEnabled: Bool {
+        get { settings.fullContentURLPrefixEnabled }
+        set { settings.fullContentURLPrefixEnabled = newValue }
+    }
+
+    var fullContentURLPrefix: String {
+        get { settings.fullContentURLPrefix }
+        set { settings.fullContentURLPrefix = newValue }
+    }
+
+    var globalSummaryPresetID: String {
+        get { settings.globalSummaryPresetID }
+        set { settings.globalSummaryPresetID = newValue }
+    }
+
+    var summaryPromptPresets: [SummaryPromptPreset] {
+        get { settings.summaryPromptPresets }
+        set { settings.summaryPromptPresets = newValue }
+    }
+
+    var smartInterestFilterEnabled: Bool {
+        get { settings.smartInterestFilterEnabled }
+        set { settings.smartInterestFilterEnabled = newValue }
+    }
+
+    var autoMarkLowInterestRead: Bool {
+        get { settings.autoMarkLowInterestRead }
+        set { settings.autoMarkLowInterestRead = newValue }
+    }
+
+    var lowInterestThreshold: Double {
+        get { settings.lowInterestThreshold }
+        set { settings.lowInterestThreshold = newValue }
+    }
+
+    var sortByInterestScore: Bool {
+        get { settings.sortByInterestScore }
+        set { settings.sortByInterestScore = newValue }
+    }
+
+    var modelRoutingEnabled: Bool {
+        get { settings.modelRoutingEnabled }
+        set { settings.modelRoutingEnabled = newValue }
+    }
+
     var modelRoutingShortLimit: Int {
         get { settings.modelRoutingShortLimit }
         set { settings.modelRoutingShortLimit = newValue }
     }
+
+    var interestWeights: [String: Double] {
+        get { settings.interestWeights }
+        set { settings.interestWeights = newValue }
+    }
+
+    var ttsVoice: String {
+        get { settings.ttsVoice }
+        set { settings.ttsVoice = newValue }
+    }
+
+    var ttsRate: Double {
+        get { settings.ttsRate }
+        set { settings.ttsRate = newValue }
+    }
+
+    var colorTheme: ReadingTheme {
+        get { settings.colorTheme }
+        set { settings.colorTheme = newValue }
+    }
+
+    var appearanceMode: AppearanceMode {
+        get { settings.appearanceMode }
+        set { settings.appearanceMode = newValue }
+    }
+
+    var appFontFamily: AppFontFamily {
+        get { settings.appFontFamily }
+        set { settings.appFontFamily = newValue }
+    }
+
+    var feedSortMode: FeedSortMode {
+        get { settings.feedSortMode }
+        set { settings.feedSortMode = newValue }
+    }
+
+    var targetLanguage: AppLanguage {
+        get { settings.targetLanguage }
+        set { settings.targetLanguage = newValue }
+    }
+
+    var translationConcurrency: Int {
+        get { settings.translationConcurrency }
+        set { settings.translationConcurrency = newValue }
+    }
+
+    var aiOutputLanguage: AppLanguage {
+        get { settings.aiOutputLanguage }
+        set { settings.aiOutputLanguage = newValue }
+    }
+
+    var microsoftTranslateRegion: String {
+        get { settings.microsoftTranslateRegion }
+        set { settings.microsoftTranslateRegion = newValue }
+    }
+
+    var lingvaCustomBase: String {
+        get { settings.lingvaCustomBase }
+        set { settings.lingvaCustomBase = newValue }
+    }
+
+    var defaultChatProviderID: UUID? {
+        get { settings.defaultChatProviderID }
+        set { settings.defaultChatProviderID = newValue }
+    }
+
 
     /// 翻译引擎链与限流（与 UI 状态分离）
     let translationCoordinator = TranslationCoordinator()
