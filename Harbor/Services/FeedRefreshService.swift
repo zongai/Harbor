@@ -79,4 +79,60 @@ enum FeedRefreshService {
         }
         return data
     }
+
+
+    /// 网络拉取 + XML 解析（在后台执行，避免占用 MainActor）
+    struct ParsedFeedPayload: @unchecked Sendable {
+        let data: Data
+        let articles: [Article]
+        /// 实际成功的请求 URL（可能从 http 升到 https）
+        let resolvedURL: URL
+        /// 是否改写了协议（调用方可将 feed.url 更新为 https）
+        let upgradedToHTTPS: Bool
+    }
+
+    /// 拉取 Feed 并解析为 Article 列表；磁盘缓存 XML 也在后台写入
+    static func fetchAndParse(
+        url: URL,
+        feedID: UUID,
+        feedTitle: String,
+        cacheKeyURLString: String
+    ) async throws -> ParsedFeedPayload {
+        try await Task.detached(priority: .userInitiated) {
+            var requestURL = url
+            var upgraded = false
+            let data: Data
+            do {
+                data = try await FeedRefreshService.fetchFeedData(from: requestURL)
+            } catch let firstError {
+                guard requestURL.scheme?.lowercased() == "http",
+                      var comps = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else {
+                    throw firstError
+                }
+                comps.scheme = "https"
+                guard let httpsURL = comps.url, NetworkURLPolicy.isAllowed(httpsURL) else {
+                    throw firstError
+                }
+                data = try await FeedRefreshService.fetchFeedData(from: httpsURL)
+                requestURL = httpsURL
+                upgraded = true
+            }
+            OfflineCache.saveFeedXML(url: cacheKeyURLString, data: data)
+            let articles = FeedParser.parse(data: data, feedID: feedID, feedTitle: feedTitle)
+            return ParsedFeedPayload(
+                data: data,
+                articles: articles,
+                resolvedURL: requestURL,
+                upgradedToHTTPS: upgraded
+            )
+        }.value
+    }
+
+    /// 仅解析（用于离线缓存 XML）
+    static func parseOffline(data: Data, feedID: UUID, feedTitle: String) async -> [Article] {
+        await Task.detached(priority: .userInitiated) {
+            FeedParser.parse(data: data, feedID: feedID, feedTitle: feedTitle)
+        }.value
+    }
 }
+

@@ -890,32 +890,41 @@ class AppStore: AIService.Runtime {
             }
         }
         do {
-            let data = try await FeedRefreshService.fetchFeedData(from: url)
-            OfflineCache.saveFeedXML(url: urlStr, data: data)
-            applyParsedFeed(data: data, feedID: feedID, idx: idx, urlStr: urlStr, persist: persist)
+            // 网络 + 解析在 Task.detached 中完成，回到主线程只做状态合并
+            let payload = try await FeedRefreshService.fetchAndParse(
+                url: url,
+                feedID: feedID,
+                feedTitle: feedTitle,
+                cacheKeyURLString: urlStr
+            )
+            applyParsedFeed(
+                data: payload.data,
+                preParsedArticles: payload.articles,
+                feedID: feedID,
+                urlStr: urlStr,
+                persist: persist
+            )
+            if payload.upgradedToHTTPS,
+               let i = feeds.firstIndex(where: { $0.id == feedID }) {
+                feeds[i].url = payload.resolvedURL.absoluteString
+                if persist { saveToStorage() }
+            }
             clearFeedRefreshError(feedID, persist: persist)
             return nil
         } catch {
-            // http 失败时尝试 https
-            if url.scheme?.lowercased() == "http",
-               var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-                comps.scheme = "https"
-                if let httpsURL = comps.url, NetworkURLPolicy.isAllowed(httpsURL) {
-                    do {
-                        let data = try await FeedRefreshService.fetchFeedData(from: httpsURL)
-                        OfflineCache.saveFeedXML(url: urlStr, data: data)
-                        applyParsedFeed(data: data, feedID: feedID, idx: idx, urlStr: urlStr, persist: persist)
-                        if let i = feeds.firstIndex(where: { $0.id == feedID }) {
-                            feeds[i].url = httpsURL.absoluteString
-                            if persist { saveToStorage() }
-                        }
-                        clearFeedRefreshError(feedID, persist: persist)
-                        return nil
-                    } catch { /* fall through */ }
-                }
-            }
             if let cached = OfflineCache.loadFeedXML(url: urlStr) {
-                applyParsedFeed(data: cached, feedID: feedID, idx: idx, urlStr: urlStr, persist: persist)
+                let articles = await FeedRefreshService.parseOffline(
+                    data: cached,
+                    feedID: feedID,
+                    feedTitle: feedTitle
+                )
+                applyParsedFeed(
+                    data: cached,
+                    preParsedArticles: articles,
+                    feedID: feedID,
+                    urlStr: urlStr,
+                    persist: persist
+                )
                 let detail = Self.friendlyNetworkError(error)
                 let reason = "已用本地缓存（\(detail)）"
                 setFeedRefreshError(feedID, reason: reason, persist: persist)
@@ -1021,19 +1030,37 @@ class AppStore: AIService.Runtime {
         return clipped
     }
 
-    private func applyParsedFeed(data: Data, feedID: UUID, idx: Int, urlStr: String, persist: Bool = true) {
+    private func applyParsedFeed(
+        data: Data,
+        preParsedArticles: [Article]? = nil,
+        feedID: UUID,
+        urlStr: String,
+        persist: Bool = true
+    ) {
         // 刷新过程中禁用隐式动画，避免列表因未读数/排序变化而“自动展开/折叠”
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            applyParsedFeedUnanimated(data: data, feedID: feedID, urlStr: urlStr, persist: persist)
+            applyParsedFeedUnanimated(
+                data: data,
+                preParsedArticles: preParsedArticles,
+                feedID: feedID,
+                urlStr: urlStr,
+                persist: persist
+            )
         }
     }
 
-    private func applyParsedFeedUnanimated(data: Data, feedID: UUID, urlStr: String, persist: Bool) {
+    private func applyParsedFeedUnanimated(
+        data: Data,
+        preParsedArticles: [Article]?,
+        feedID: UUID,
+        urlStr: String,
+        persist: Bool
+    ) {
         // 并发刷新时 idx 可能过期，始终按 feedID 重定位
         guard let idx = feeds.firstIndex(where: { $0.id == feedID }) else { return }
-        let parsed = FeedParser.parse(data: data, feedID: feedID, feedTitle: feeds[idx].title)
+        let parsed = preParsedArticles ?? FeedParser.parse(data: data, feedID: feedID, feedTitle: feeds[idx].title)
         var existingByLink: [String: Int] = [:]
         for (i, a) in feeds[idx].articles.enumerated() {
             let key = Self.canonicalLink(a.link)
@@ -1151,30 +1178,82 @@ class AppStore: AIService.Runtime {
             }
             let end = min(offset + limit, snapshot.count)
             let batch = Array(snapshot[offset..<end])
-            await withTaskGroup(of: (String, String?).self) { group in
+            await withTaskGroup(of: (UUID, String, Result<FeedRefreshService.ParsedFeedPayload, Error>).self) { group in
                 for feed in batch {
                     let title = feed.title.isEmpty ? "未命名源" : feed.title
                     let id = feed.id
-                    group.addTask { @MainActor in
-                        // 已取消则跳过网络
-                        if session != self.refreshSessionID {
-                            return (title, nil)
+                    let urlStr = feed.url
+                    group.addTask {
+                        // 非 MainActor：只做网络 + 解析；取消在主线程 for-await 中丢弃结果
+                        guard let url = NetworkURLPolicy.validate(urlStr) else {
+                            let err = NSError(
+                                domain: "Harbor.FeedRefresh",
+                                code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: "不允许的地址（仅支持公网 http/https）"]
+                            )
+                            return (id, title, .failure(err))
                         }
-                        let err = await self.refreshFeedResult(id, manageLoading: false, persist: false)
-                        return (title, err)
+                        do {
+                            let payload = try await FeedRefreshService.fetchAndParse(
+                                url: url,
+                                feedID: id,
+                                feedTitle: title,
+                                cacheKeyURLString: urlStr
+                            )
+                            return (id, title, .success(payload))
+                        } catch {
+                            return (id, title, .failure(error))
+                        }
                     }
                 }
-                for await (title, err) in group {
+                for await (id, title, outcome) in group {
                     if session != refreshSessionID {
                         cancelled = true
                         group.cancelAll()
                         break
                     }
                     completed += 1
-                    // 进度条每步更新即可；动画只在批次边界做，避免 80+ 源时主线程动画风暴
                     refreshProgressCurrent = completed
                     refreshProgressTitle = title
-                    if let err { failures.append(err) }
+                    switch outcome {
+                    case .success(let payload):
+                        applyParsedFeed(
+                            data: payload.data,
+                            preParsedArticles: payload.articles,
+                            feedID: id,
+                            urlStr: feeds.first(where: { $0.id == id })?.url ?? "",
+                            persist: false
+                        )
+                        if payload.upgradedToHTTPS,
+                           let i = feeds.firstIndex(where: { $0.id == id }) {
+                            feeds[i].url = payload.resolvedURL.absoluteString
+                        }
+                        clearFeedRefreshError(id, persist: false)
+                    case .failure(let error):
+                        let urlStr = feeds.first(where: { $0.id == id })?.url ?? ""
+                        if let cached = OfflineCache.loadFeedXML(url: urlStr), !cached.isEmpty {
+                            let articles = await FeedRefreshService.parseOffline(
+                                data: cached,
+                                feedID: id,
+                                feedTitle: title
+                            )
+                            applyParsedFeed(
+                                data: cached,
+                                preParsedArticles: articles,
+                                feedID: id,
+                                urlStr: urlStr,
+                                persist: false
+                            )
+                            let detail = Self.friendlyNetworkError(error)
+                            let reason = "已用本地缓存（\(detail)）"
+                            setFeedRefreshError(id, reason: reason, persist: false)
+                            failures.append("「\(title)」：\(reason)")
+                        } else {
+                            let reason = Self.friendlyNetworkError(error)
+                            setFeedRefreshError(id, reason: reason, persist: false)
+                            failures.append("「\(title)」：\(reason)")
+                        }
+                    }
                 }
             }
             if cancelled { break }
