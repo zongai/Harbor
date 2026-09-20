@@ -242,6 +242,21 @@ struct SettingsView: View {
                         Label("清除缓存", systemImage: "trash")
                     }
                     .disabled(store.isClearingCache)
+                    Toggle(isOn: $settings.fullContentURLPrefixEnabled) {
+                        Label("全文 URL 前缀", systemImage: "link.badge.plus")
+                    }
+                    .onChange(of: store.fullContentURLPrefixEnabled) { _, _ in
+                        store.persistSettings()
+                    }
+                    if store.fullContentURLPrefixEnabled {
+                        TextField("前缀，如 https://archive.is/", text: $settings.fullContentURLPrefix)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .onChange(of: store.fullContentURLPrefix) { _, _ in
+                                store.persistSettings()
+                            }
+                    }
                     if let dataIOMessage {
                         Text(dataIOMessage)
                             .font(.footnote)
@@ -250,7 +265,7 @@ struct SettingsView: View {
                 } header: {
                     Text("数据")
                 } footer: {
-                    Text("清除缓存只删除全文、Feed 快照与图片；订阅与已读保留。OPML 用于订阅源迁移。")
+                    Text("清除缓存只删除全文、Feed 快照与图片；订阅与已读保留。开启 URL 前缀后，在订阅列表对源左滑/长按「开启全文 URL 前缀」才会对该源生效；缓存仍按原始链接。")
                 }
                 .onAppear { cacheSizeText = store.cacheSizeDescription() }
 
@@ -277,21 +292,6 @@ struct SettingsView: View {
                         .onChange(of: store.fullContentCacheDays) { _, _ in
                             store.persistSettings()
                             store.pruneFullContentCache()
-                        }
-                        Toggle(isOn: $settings.fullContentURLPrefixEnabled) {
-                            Label("全文 URL 前缀", systemImage: "link.badge.plus")
-                        }
-                        .onChange(of: store.fullContentURLPrefixEnabled) { _, _ in
-                            store.persistSettings()
-                        }
-                        if store.fullContentURLPrefixEnabled {
-                            TextField("前缀，如 https://archive.is/", text: $settings.fullContentURLPrefix)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .keyboardType(.URL)
-                                .onChange(of: store.fullContentURLPrefix) { _, _ in
-                                    store.persistSettings()
-                                }
                         }
                         Toggle("导出设置时包含 API Key", isOn: $exportIncludeSecrets)
                         Button {
@@ -357,8 +357,8 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text(showAdvancedSettings
-                          ? "已显示：文章黑名单、已读/缓存保留、URL 前缀、设置导入导出。"
-                          : "默认精简。打开后可管理黑名单、缓存策略与设置备份。")
+                          ? "已显示：文章黑名单、已读/缓存保留、设置导入导出。"
+                          : "默认精简。打开后可管理黑名单、缓存策略与设置备份。全文 URL 前缀在「数据」分区。")
                 }
             }
             .appFormChrome()
