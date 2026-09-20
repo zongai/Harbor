@@ -749,8 +749,8 @@ enum ArticleContentFetcher {
 
     /// 图表站正文缺图时，用 og:image / twitter:image / 页内大图兜底
     private static func ensureChartImages(_ content: String, pageHTML: String, baseURL: URL) -> String {
-        let imgCount = content.lowercased().components(separatedBy: "<img").count - 1
-        if imgCount >= 1 { return content }
+        var work = content
+        let existingCount = work.lowercased().components(separatedBy: "<img").count - 1
         var candidates: [String] = []
         if let og = matchFirst(#"<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']"#, in: pageHTML)
             ?? matchFirst(#"<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']"#, in: pageHTML) {
@@ -760,20 +760,43 @@ enum ArticleContentFetcher {
             ?? matchFirst(#"<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']"#, in: pageHTML) {
             candidates.append(tw)
         }
-        // 页内 wp-image / uploads 大图
-        if let re = try? NSRegularExpression(pattern: #"<img\b[^>]*src=["']([^"']+)["'][^>]*>"#, options: .caseInsensitive) {
+        // 页内所有 img（含 srcset）
+        if let re = try? NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: .caseInsensitive) {
             let ns = pageHTML as NSString
-            for m in re.matches(in: pageHTML, range: NSRange(location: 0, length: ns.length)).prefix(12) {
-                guard m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: pageHTML) else { continue }
-                let src = String(pageHTML[r])
+            for m in re.matches(in: pageHTML, range: NSRange(location: 0, length: ns.length)).prefix(30) {
+                let tag = ns.substring(with: m.range)
+                var src = imageSrc(from: tag)
+                if src == nil || (src?.hasPrefix("data:") == true) {
+                    if let set = matchFirst(#"srcset=["']([^"']+)["']"#, in: tag) {
+                        src = bestURLFromSrcset(set)
+                    }
+                }
+                guard let src else { continue }
                 let low = src.lowercased()
-                if low.contains("avatar") || low.contains("logo") || low.contains("emoji") { continue }
-                if low.contains("uploads") || low.contains("wp-content") || low.contains("i0.wp.com") || low.contains("i1.wp.com") {
+                if low.contains("avatar") || low.contains("logo") || low.contains("emoji") || low.contains("icon") { continue }
+                if low.contains("uploads") || low.contains("wp-content") || low.contains(".wp.com")
+                    || low.contains("visualcapitalist") {
                     candidates.append(src)
                 }
             }
         }
+        // 点图放大：href 指向 uploads
+        if let re = try? NSRegularExpression(
+            pattern: #"href=["'](https?://[^"']+(?:uploads|\.wp\.com)[^"']*\.(?:jpg|jpeg|png|webp)[^"']*)["']"#,
+            options: .caseInsensitive
+        ) {
+            let ns = pageHTML as NSString
+            for m in re.matches(in: pageHTML, range: NSRange(location: 0, length: ns.length)).prefix(16) {
+                if m.numberOfRanges >= 2, let r = Range(m.range(at: 1), in: pageHTML) {
+                    candidates.append(String(pageHTML[r]))
+                }
+            }
+        }
         var seen = Set<String>()
+        for s in imageSrcs(in: work) {
+            let k = imageDedupeKey(s)
+            if !k.isEmpty { seen.insert(k) }
+        }
         var inject: [String] = []
         for raw in candidates {
             let abs: String = {
@@ -785,10 +808,10 @@ enum ArticleContentFetcher {
             guard !key.isEmpty, !seen.contains(key) else { continue }
             seen.insert(key)
             inject.append("<p><img src=\"\(abs)\" alt=\"\"></p>")
-            if inject.count >= 3 { break }
+            if inject.count >= (existingCount >= 1 ? 2 : 5) { break }
         }
-        guard !inject.isEmpty else { return content }
-        return inject.joined(separator: "\n") + "\n" + content
+        guard !inject.isEmpty else { return work }
+        return inject.joined(separator: "\n") + "\n" + work
     }
 
     private static func extractTitle(from html: String) -> String? {
@@ -1831,12 +1854,30 @@ enum ArticleContentFetcher {
                 }
                 return nil
             }()
-            // 特色图 / Jetpack 图：图表站正文常依赖首图（若正文已有同图尺寸变体则不重复插入）
+            // 特色图 / Jetpack 图：图表站正文常依赖首图（始终尽量前置）
             if let featured = featuredImageURL(fromWordPress: obj) {
                 let featuredKey = imageDedupeKey(featured)
                 let existingKeys = imageSrcs(in: contentHTML).map { imageDedupeKey($0) }
                 if featuredKey.isEmpty || !existingKeys.contains(featuredKey) {
                     contentHTML = "<p><img src=\"" + featured + "\" alt=\"\"></p>\n" + contentHTML
+                }
+            }
+            // 附图：_embedded 里可能还有更多 media
+            if isWordPressChartHost(pageURL.host),
+               let emb = obj["_embedded"] as? [String: Any] {
+                var extra: [String] = []
+                if let media = emb["wp:featuredmedia"] as? [[String: Any]] {
+                    for m in media {
+                        if let u = m["source_url"] as? String { extra.append(u) }
+                    }
+                }
+                // 部分主题把图挂在 content.rendered 外的 meta
+                for u in extra {
+                    let key = imageDedupeKey(u)
+                    let existing = imageSrcs(in: contentHTML).map { imageDedupeKey($0) }
+                    if !key.isEmpty, !existing.contains(key) {
+                        contentHTML += "\n<p><img src=\"\(u)\" alt=\"\"></p>"
+                    }
                 }
             }
             // 正文里再扫一遍 figure/img 懒加载字段与锚点大图

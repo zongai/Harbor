@@ -461,8 +461,18 @@ enum ContentBlockParser {
                     replacements.append((fullRange, "\n\n\(imgToken)\n\n"))
                     continue
                 }
+                // 链向图片文件本身（VC 点图放大）：当作配图
+                let href = String(working[hrefRange])
+                let hrefLow = href.lowercased()
+                if hrefLow.range(of: #"\.(jpg|jpeg|png|webp)(\?|$)"#, options: .regularExpression) != nil,
+                   hrefLow.contains("uploads") || hrefLow.contains(".wp.com") || hrefLow.contains("visualcapitalist") {
+                    let kept = imageURLs.count
+                    imageURLs.append(href.hasPrefix("//") ? "https:\(href)" : href)
+                    replacements.append((fullRange, "\n\n__IMG_\(kept)__\n\n"))
+                    continue
+                }
                 let idx = linkHrefs.count
-                linkHrefs.append(String(working[hrefRange]))
+                linkHrefs.append(href)
                 linkTexts.append(inner)
                 replacements.append((fullRange, "__LINK_\(idx)__"))
             }
@@ -826,19 +836,51 @@ enum ContentBlockParser {
             if s.contains("placeholder") || s.contains("1x1") || s.contains("blank.gif") { return true }
             return false
         }()
+        // 优先大图字段 / srcset 最大，避免 VC 懒加载占位当主图
         let candidates = [
-            attr("data-src"),
-            attr("data-lazy-src"),
-            attr("data-original"),
             attr("data-full-url"),
             attr("data-large_image"),
+            attr("data-large-file"),
+            attr("data-original"),
+            attr("data-src"),
+            attr("data-lazy-src"),
             attr("data-url"),
             bestFromSrcset(attr("data-srcset")),
             bestFromSrcset(attr("srcset")),
             srcIsPlaceholder ? nil : src,
             src
         ].compactMap { $0 }.filter { !$0.isEmpty && !$0.hasPrefix("data:") }
-        return candidates.first
+        // 在候选中挑「看起来最大」的一条（带尺寸后缀或 w= 参数）
+        return candidates.max(by: { a, b in
+            imageURLPreferScore(a) < imageURLPreferScore(b)
+        })
+    }
+
+    private static func imageURLPreferScore(_ url: String) -> Int {
+        var score = 0
+        let u = url.lowercased()
+        if let re = try? NSRegularExpression(pattern: #"-(\d{2,4})x(\d{2,4})\."#, options: []),
+           let m = re.firstMatch(in: url, range: NSRange(location: 0, length: (url as NSString).length)),
+           m.numberOfRanges >= 2 {
+            let w = Int((url as NSString).substring(with: m.range(at: 1))) ?? 0
+            score += w
+        } else {
+            score += 2000 // 无尺寸后缀倾向原图
+        }
+        if let wStr = matchFirstAttr(#"[?&]w=(\d+)"#, in: u), let w = Int(wStr) {
+            score += w
+        }
+        if u.contains("placeholder") || u.contains("blur") { score -= 5000 }
+        return score
+    }
+
+    private static func matchFirstAttr(_ pattern: String, in text: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
+        let ns = text as NSString
+        guard let m = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+              m.numberOfRanges >= 2,
+              let r = Range(m.range(at: 1), in: text) else { return nil }
+        return String(text[r])
     }
 
     private static func isIgnorableImageURL(_ url: String) -> Bool {
@@ -1462,6 +1504,8 @@ struct ArticleTableView: View {
 struct DownsampledArticleImage: View {
     let url: URL
     @State private var image: UIImage?
+    @State private var loadFailed = false
+    @State private var isLoading = true
     /// 阅读栏宽约屏宽，按 2× 屏宽像素上限解码
     private var maxPixel: CGFloat {
         ImageDownsampling.articleMaxPixel()
@@ -1474,6 +1518,29 @@ struct DownsampledArticleImage: View {
                     .resizable()
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+            } else if isLoading {
+                RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .overlay { ProgressView() }
+            } else if loadFailed {
+                RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous)
+                    .fill(Color.secondary.opacity(0.08))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 120)
+                    .overlay {
+                        VStack(spacing: 6) {
+                            Image(systemName: "photo")
+                                .font(.title2)
+                            Text("图片加载失败")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .onTapGesture {
+                        Task { await load() }
+                    }
             }
         }
         .task(id: url.absoluteString) {
@@ -1482,16 +1549,67 @@ struct DownsampledArticleImage: View {
     }
 
     private func load() async {
-        let key = url.absoluteString
-        if let data = OfflineCache.loadImage(url: key),
-           let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPixel) {
-            image = ui
-            return
+        isLoading = true
+        loadFailed = false
+        image = nil
+        let candidates = Self.imageURLCandidates(for: url)
+        for candidate in candidates {
+            let key = candidate.absoluteString
+            if let data = OfflineCache.loadImage(url: key) {
+                if let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPixel) ?? UIImage(data: data) {
+                    image = ui
+                    isLoading = false
+                    return
+                }
+            }
+            if let ui = await fetchImage(candidate, cacheKey: key) {
+                image = ui
+                isLoading = false
+                return
+            }
         }
+        isLoading = false
+        loadFailed = true
+    }
+
+    /// Photon CDN 与源站 uploads 互备，提高图表可达性
+    private static func imageURLCandidates(for url: URL) -> [URL] {
+        var list: [URL] = [url]
+        let s = url.absoluteString
+        // i0.wp.com/www.example.com/path?ssl=1 → https://www.example.com/path
+        if let host = url.host?.lowercased(), host.hasSuffix(".wp.com") || host == "wp.com" {
+            var path = url.path
+            if path.hasPrefix("/") { path = String(path.dropFirst()) }
+            // path 形如 www.visualcapitalist.com/wp-content/uploads/...
+            if path.contains("wp-content/") || path.contains(".") {
+                if let origin = URL(string: "https://\(path)") {
+                    list.append(origin)
+                }
+                // 也尝试去掉 query 的 photon 原链
+                if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                    comps.query = nil
+                    if let bare = comps.url { list.append(bare) }
+                }
+            }
+        }
+        // 源站 → 尝试 photon（部分地区源站慢）
+        if let host = url.host?.lowercased(),
+           host.contains("visualcapitalist.com"),
+           !host.hasSuffix(".wp.com") {
+            let stripped = s.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "")
+            if let photon = URL(string: "https://i0.wp.com/\(stripped)") {
+                list.append(photon)
+            }
+        }
+        // 去重保序
+        var seen = Set<String>()
+        return list.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    private func fetchImage(_ url: URL, cacheKey: String) async -> UIImage? {
         do {
-            var request = URLRequest(url: url, timeoutInterval: 20)
+            var request = URLRequest(url: url, timeoutInterval: 25)
             request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-            // 部分 CDN 校验 Referer（Jetpack Photon / VC / Sixth Tone 等）
             if let host = url.host?.lowercased() {
                 if host.contains("sixthtone.com") {
                     request.setValue("https://www.sixthtone.com/", forHTTPHeaderField: "Referer")
@@ -1501,7 +1619,6 @@ struct DownsampledArticleImage: View {
                             || host.hasSuffix(".wp.com")
                             || host == "wp.com"
                             || host.contains("wordpress.com") {
-                    // Photon 图床用站点域作 Referer，避免热链拦截
                     request.setValue("https://www.visualcapitalist.com/", forHTTPHeaderField: "Referer")
                 } else if let scheme = url.scheme {
                     request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
@@ -1512,14 +1629,20 @@ struct DownsampledArticleImage: View {
                 forHTTPHeaderField: "User-Agent"
             )
             let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
-            guard !data.isEmpty else { return }
-            OfflineCache.saveImage(url: key, data: data)
-            if let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPixel) {
-                await MainActor.run { image = ui }
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return nil
             }
+            guard !data.isEmpty, data.count > 32 else { return nil }
+            // 拒绝明显 HTML/挑战页（CF）冒充图片
+            if let head = String(data: data.prefix(64), encoding: .utf8)?.lowercased(),
+               head.contains("<html") || head.contains("<!doctype") {
+                return nil
+            }
+            OfflineCache.saveImage(url: cacheKey, data: data)
+            return ImageDownsampling.downsample(data: data, maxPixel: maxPixel)
+                ?? UIImage(data: data)
         } catch {
-            // 静默失败，不占位
+            return nil
         }
     }
 }
