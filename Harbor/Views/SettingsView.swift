@@ -480,7 +480,7 @@ struct FontSettingsView: View {
             }
             Section {
                 fontRow("文章标题", value: $store.readerTitleFontSize, range: 18...34)
-                fontRow("正文字号", value: $store.readerBodyFontSize, range: 14...28)
+                fontRow("正文字号", value: $store.fontSize, range: 14...28)
                 fontRow("AI 摘要", value: $store.aiSummaryFontSize, range: 14...28)
             } header: {
                 Text("阅读")
