@@ -23,6 +23,10 @@ class AppStore: AIService.Runtime {
     /// 防抖间隔：连续滑动已读时合并为一次 JSON 编码
     private static let feedsPersistDelayNs: UInt64 = 1_200_000_000
 
+    /// 文章已读/收藏等标志变更序号。列表可依赖此值做精准刷新，避免整源替换带来的宽观察。
+    private(set) var articleFlagsEpoch: UInt64 = 0
+
+
     var listTranslationProgressText = ""
     private(set) var listTranslationSessionID = 0
     var errorMessage: String?
@@ -251,16 +255,14 @@ class AppStore: AIService.Runtime {
         for i in feeds.indices {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
                 if !feeds[i].articles[j].isRead {
+                    // 就地改字段 + unreadCount；不整源 feeds[i]= 赋值，缩小 Observation 失效面
                     feeds[i].articles[j].isRead = true
-                    // 增量维护未读数，避免整表 filter
                     feeds[i].unreadCount = max(0, feeds[i].unreadCount - 1)
+                    articleFlagsEpoch &+= 1
                 }
                 rememberReadLink(feeds[i].articles[j].link)
-                let refreshed = feeds[i]
-                feeds[i] = refreshed
             }
         }
-        // 已读链接已即时落盘；feeds 快照防抖写入，避免每次滑动全量 encode
         scheduleFeedsPersist()
     }
 
@@ -270,10 +272,9 @@ class AppStore: AIService.Runtime {
                 if feeds[i].articles[j].isRead {
                     feeds[i].articles[j].isRead = false
                     feeds[i].unreadCount += 1
+                    articleFlagsEpoch &+= 1
                 }
                 forgetReadLink(feeds[i].articles[j].link)
-                let refreshed = feeds[i]
-                feeds[i] = refreshed
             }
         }
         scheduleFeedsPersist()
@@ -289,8 +290,7 @@ class AppStore: AIService.Runtime {
         }
         if changed {
             feeds[i].unreadCount = 0
-            let refreshed = feeds[i]
-            feeds[i] = refreshed
+            articleFlagsEpoch &+= 1
             scheduleFeedsPersist()
         }
     }
@@ -303,8 +303,7 @@ class AppStore: AIService.Runtime {
                 if willFavorite {
                     boostInterest(from: feeds[i].articles[j])
                 }
-                let refreshed = feeds[i]
-                feeds[i] = refreshed
+                articleFlagsEpoch &+= 1
             }
         }
         scheduleFeedsPersist()

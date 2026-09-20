@@ -6,7 +6,8 @@ struct FavoritesListView: View {
     @State private var readingIDs: Set<UUID> = []
 
     private var articles: [Article] {
-        store.favoriteArticles
+        let _ = store.articleFlagsEpoch
+        return store.favoriteArticles
             .sorted { ($0.publishedDate ?? .distantPast) > ($1.publishedDate ?? .distantPast) }
     }
 

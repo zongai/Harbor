@@ -534,7 +534,9 @@ struct FeedsListView: View {
     
     /// 源列表展示用：默认只显示有未读的源；开启「显示已读文章」时显示全部
     private var visibleFeedSections: [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] {
-        store.feedsByGroup.compactMap { section in
+        // 已读变更后未读角标/隐藏已读源需刷新；依赖窄序号而非整源替换
+        let _ = store.articleFlagsEpoch
+        return store.feedsByGroup.compactMap { section in
             let feeds = store.showReadArticles
                 ? section.feeds
                 : section.feeds.filter { $0.unreadCount > 0 }
@@ -719,7 +721,10 @@ struct FeedRow: View {
     @Environment(AppStore.self) private var store
     @Environment(\.theme) private var theme
     let feed: RSSFeed
-    private var live: RSSFeed { store.feeds.first(where: { $0.id == feed.id }) ?? feed }
+    private var live: RSSFeed {
+        let _ = store.articleFlagsEpoch
+        return store.feeds.first(where: { $0.id == feed.id }) ?? feed
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: AppSpacing.sm) {

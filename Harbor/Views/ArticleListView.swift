@@ -23,9 +23,10 @@ struct ArticleListView: View {
     private let translationBatchSize = 24
 
     private var articles: [Article] {
-        // 显式依赖 openedArticleID / readingIDs，保证返回后重新过滤
+        // 显式依赖 openedArticleID / readingIDs / 已读收藏序号，保证标志变更后重新过滤
         let _ = openedArticleID
         let _ = readingIDs
+        let _ = store.articleFlagsEpoch
         var all = store.articlesForFeed(feed.id)
         if store.sortByInterestScore && store.smartInterestFilterEnabled {
             all.sort {
