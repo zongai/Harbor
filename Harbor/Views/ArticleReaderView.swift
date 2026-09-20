@@ -489,11 +489,12 @@ struct ArticleReaderView: View {
                     if fullContentAllowed {
                         let hasSubstantialBody = HTMLUtils.stripTags(currentArticle.content).count >= 400
                         Button {
-                            Task { await fetchFullContent() }
+                            // 已有全文时再次点击 → 强制重新抓取
+                            Task { await fetchFullContent(force: hasSubstantialBody) }
                         } label: {
                             Label(
-                                hasSubstantialBody ? "已获取全文" : "获取全文",
-                                systemImage: hasSubstantialBody ? "arrow.down.doc" : "arrow.down.doc.fill"
+                                hasSubstantialBody ? "重新获取全文" : "获取全文",
+                                systemImage: hasSubstantialBody ? "arrow.clockwise" : "arrow.down.doc.fill"
                             )
                         }
                         .disabled(isFetchingFull)
@@ -703,32 +704,37 @@ struct ArticleReaderView: View {
         }
     }
 
-    private func fetchFullContent(silent: Bool = false) async {
+    /// - Parameter force: 用户再次点击时为 true，跳过本地缓存重新抓取
+    private func fetchFullContent(silent: Bool = false, force: Bool = false) async {
         guard fullContentAllowed else {
             if !silent { fullContentError = "该订阅源已关闭全文获取" }
             return
         }
-        // 仅当水合后正文已足够长时才跳过；hasFullContent 但正文空白说明缓存丢失，必须重抓
+        // 自动/静默：正文已足够长则跳过；手动 force 始终重抓
         let existingPlain = HTMLUtils.stripTags(currentArticle.content)
-        if existingPlain.count >= 400 && !silent {
-            fullContentHint = "已是全文内容"
+        if !force, existingPlain.count >= 400, silent {
             return
         }
         fullContentError = nil
         isFetchingFull = true
-        if !silent { fullContentHint = "正在获取全文…" }
+        if !silent {
+            fullContentHint = force ? "正在重新获取全文…" : "正在获取全文…"
+        }
         do {
-            let updated = try await store.fetchFullContent(for: currentArticle)
+            let updated = try await store.fetchFullContent(for: currentArticle, force: force)
             showTranslated = false
             translatedContent = nil
             let n = HTMLUtils.stripTags(updated.content).count
-            fullContentHint = silent ? nil : "已获取全文（约 \(n) 字）"
+            fullContentHint = silent ? nil : (force ? "已重新获取（约 \(n) 字）" : "已获取全文（约 \(n) 字）")
             // 全文完成后再自动翻译（抓取过程中不翻译）
             isFetchingFull = false
             await autoTranslateBodyIfNeeded()
             if !silent {
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
-                if fullContentHint?.contains("已获取全文") == true { fullContentHint = nil }
+                if let hint = fullContentHint,
+                   hint.contains("已获取") || hint.contains("已重新获取") {
+                    fullContentHint = nil
+                }
             }
             return
         } catch {

@@ -36,20 +36,25 @@ enum ArticleContentFetcher {
         }
     }
 
-    static func fetchFullContent(from urlString: String) async throws -> Result {
+    static func fetchFullContent(from urlString: String, forceReload: Bool = false) async throws -> Result {
         let key = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 强制重抓不走去重缓存键共享，避免与「读缓存」请求合并
+        if forceReload {
+            return try await fetchFullContentUnshared(from: key, forceReload: true)
+        }
         return try await fullContentDeduper.run(key: key) {
-            try await fetchFullContentUnshared(from: key)
+            try await fetchFullContentUnshared(from: key, forceReload: false)
         }
     }
 
-    private static func fetchFullContentUnshared(from urlString: String) async throws -> Result {
+    private static func fetchFullContentUnshared(from urlString: String, forceReload: Bool = false) async throws -> Result {
         guard let url = NetworkURLPolicy.validate(urlString) else {
             throw FetchError.invalidURL
         }
 
-        // 仅复用「足够长」的缓存；过短/空壳（历史误存）强制重抓
-        if let cached = OfflineCache.loadArticleHTML(link: urlString), !cached.isEmpty {
+        // 非强制：仅复用「足够长」的缓存；过短/空壳（历史误存）强制重抓
+        if !forceReload,
+           let cached = OfflineCache.loadArticleHTML(link: urlString), !cached.isEmpty {
             let len = HTMLUtils.stripTags(cached).count
             if len >= 400 {
                 return Result(title: nil, contentHTML: cached, textLength: len)

@@ -3311,49 +3311,50 @@ class AppStore: AIService.Runtime {
         feeds.first(where: { $0.id == article.feedID })?.fetchCommentsEnabled ?? false
     }
 
-    func fetchFullContent(for article: Article) async throws -> Article {
+    /// - Parameter force: 为 true 时忽略本地正文缓存，重新从网络抓取（用户再次点「获取全文」）
+    func fetchFullContent(for article: Article, force: Bool = false) async throws -> Article {
         guard isFullContentEnabled(for: article) else {
             throw TranslationError.apiError("该订阅源已关闭全文获取")
         }
         let linkKey = Self.canonicalLink(article.link)
 
-        // 读：统一按 link → offline cache（不触发无谓 update，避免阅读路径 body 失效）
-        if let cached = OfflineCache.loadArticleBody(link: article.link), !cached.isEmpty,
-           HTMLUtils.stripTags(cached).count >= 400 {
-            var updated = article
-            updated.content = cached
-            updated.hasFullContent = true
-            if let i = feeds.firstIndex(where: { $0.id == article.feedID }),
-               let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }),
-               !feeds[i].articles[j].hasFullContent {
-                feeds[i].articles[j].hasFullContent = true
-                feeds[i].articles[j].content = ""
-                articleFlags.bump(article.id)
-                scheduleFeedsPersist()
+        // 非强制：优先复用 offline cache / 内存正文
+        if !force {
+            if let cached = OfflineCache.loadArticleBody(link: article.link), !cached.isEmpty,
+               HTMLUtils.stripTags(cached).count >= 400 {
+                var updated = article
+                updated.content = cached
+                updated.hasFullContent = true
+                if let i = feeds.firstIndex(where: { $0.id == article.feedID }),
+                   let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }),
+                   !feeds[i].articles[j].hasFullContent {
+                    feeds[i].articles[j].hasFullContent = true
+                    feeds[i].articles[j].content = ""
+                    articleFlags.bump(article.id)
+                    scheduleFeedsPersist()
+                }
+                return updated
             }
-            return updated
-        }
-        if article.hasFullContent, !article.content.isEmpty,
-           HTMLUtils.stripTags(article.content).count >= 400 {
-            OfflineCache.persistArticleBody(link: article.link, html: article.content)
-            var stored = article
-            stored.content = ""
-            // 仅清空列表侧正文，不整篇替换引发阅读重解析
-            if let i = feeds.firstIndex(where: { $0.id == article.feedID }),
-               let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
-                feeds[i].articles[j].content = ""
-                feeds[i].articles[j].hasFullContent = true
+            if article.hasFullContent, !article.content.isEmpty,
+               HTMLUtils.stripTags(article.content).count >= 400 {
+                OfflineCache.persistArticleBody(link: article.link, html: article.content)
+                if let i = feeds.firstIndex(where: { $0.id == article.feedID }),
+                   let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
+                    feeds[i].articles[j].content = ""
+                    feeds[i].articles[j].hasFullContent = true
+                }
+                return article
             }
-            return article
         }
 
-        // in-flight 去重：同一文章 link 共享 Task
-        if let existing = fullContentInflight[linkKey] {
+        // in-flight 去重：强制刷新使用独立 key，避免吃到未 force 的进行中任务
+        let inflightKey = force ? linkKey + "#force" : linkKey
+        if let existing = fullContentInflight[inflightKey] {
             return try await existing.value
         }
         let task = Task<Article, Error> { @MainActor in
             let fetchURL = self.fullContentFetchURL(for: article)
-            let result = try await ArticleContentFetcher.fetchFullContent(from: fetchURL)
+            let result = try await ArticleContentFetcher.fetchFullContent(from: fetchURL, forceReload: force)
             OfflineCache.persistArticleBody(link: article.link, html: result.contentHTML)
             if let i = self.feeds.firstIndex(where: { $0.id == article.feedID }),
                let j = self.feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
@@ -3367,8 +3368,8 @@ class AppStore: AIService.Runtime {
             forReader.hasFullContent = true
             return forReader
         }
-        fullContentInflight[linkKey] = task
-        defer { fullContentInflight[linkKey] = nil }
+        fullContentInflight[inflightKey] = task
+        defer { fullContentInflight[inflightKey] = nil }
         return try await task.value
     }
 
