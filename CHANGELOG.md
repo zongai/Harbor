@@ -104,6 +104,15 @@
 ### Fixed
 - 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
+## [1.3-87] — 构建中 · 分支 ui-redesign-experiment
+
+相对：`v1.3-86` / build171
+
+### 图片 / Visual Capitalist
+- 整页收集 og:image、uploads、锚点大图并插入文首（解决正文有字无图）
+- Photon 与源站 URL 互备重试；加载中/失败占位可点重试
+- 阅读解析优先大图 srcset；图片文件链接按配图显示
+
 ## [1.3-86] — 构建成功 (build171 / Actions 35519184531) · 分支 ui-redesign-experiment
 
 相对：`v1.3-85` / build170
