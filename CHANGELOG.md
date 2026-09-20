@@ -104,6 +104,16 @@
 ### Fixed
 - 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
+## [1.3-86] — 构建中 · 分支 ui-redesign-experiment
+
+相对：`v1.3-85` / build170
+
+### 图片 / Visual Capitalist
+- 提升 `srcset`、锚点大图、`<picture><source>` 为可用 `src`
+- 清洗不再因裸 `subscribe` 误删含图正文
+- 去重至少保留一张图；缺图时用 `og:image` / 页内 uploads 兜底
+- Jetpack Photon（`*.wp.com`）加载使用 visualcapitalist.com Referer
+
 ## [1.3-85] — 构建成功 (build170 / Actions 35518273081) · 分支 ui-redesign-experiment
 
 相对：`v1.3-84` / build169
