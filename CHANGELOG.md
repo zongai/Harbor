@@ -104,14 +104,30 @@
 ### Fixed
 - 设置子视图误注入 `store` 绑定导致编译失败（ProviderTag 等）
 
-## [Unreleased]
+## [1.3-83] — 构建中 · 分支 ui-redesign-experiment
+
+相对：`v1.3-82` / build167
 
 ### Added
-- Adopted the MIT License (Copyright (c) 2026 zongai). See [LICENSE](LICENSE).
+- **MIT License**（Copyright (c) 2026 zongai）。见 [LICENSE](LICENSE)
 
-（自上次成功构建以来的其它改动，将在下次成功构建时归入正式条目。）
+### Performance / Architecture
+- **正文按 link 统一读写**：列表只持元数据；`OfflineCache.persistArticleBody` / `loadArticleBody`；阈值约 400 字即落盘
+- **feeds.json 元数据快照**：编码前剥离大正文；已读/收藏链接集即时落盘；进后台 `flushPendingFeedsPersist`
+- **文章级标志索引**：`ArticleFlagsIndex` + 按源 `articleSnapshot`；未读增量维护；`articleID → feedID` 辅助索引
+- **订阅分组 section 快照**：仅 feeds/排序/折叠相关字段变化时重建
+- **搜索**：300ms 防抖、取消上一次；先标题/摘要，再 batch 补全文命中
+- **Feed 条件请求**：ETag / Last-Modified / 304；`FeedRequestGate` 全局限流；离开订阅列表取消全量刷新
+- **全文 in-flight**：同 canonical link 共享 Task；下层 RequestDeduper
+- **刷新**：`nonisolated` Fetch/Parse，`Article: Sendable`，主线程只 merge
+- **图片**：ImageIO thumbnail 略提清晰度（scale×1.15）
+- **iCloud**：settings / catalog / readState 分档防抖推送
+- **相对时间**：按分钟桶缓存格式化字符串
+- **TranslationCoordinator**：引擎可用性与 failover 查询下沉（执行仍在 AppStore）
 
 ---
+
+
 
 ## [v1.3-75] — 2026-09-18
 
