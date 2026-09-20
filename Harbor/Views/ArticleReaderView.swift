@@ -40,12 +40,12 @@ struct ArticleReaderView: View {
 
     /// 与当前阅读主题一致的状态栏/导航栏配色，保证时间与信号图标清晰可见
     private var readerStatusBarScheme: ColorScheme {
-        let resolved = ReadingTheme.resolved(
-            selected: store.colorTheme,
+        let scheme = ReadingTheme.effectiveColorScheme(
             appearance: store.appearanceMode,
             systemScheme: systemColorScheme
         )
-        return resolved.isDark ? .dark : .light
+        if store.colorTheme.prefersDarkChrome { return .dark }
+        return scheme
     }
 
     private var activeID: UUID { currentID ?? article.id }

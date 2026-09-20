@@ -108,106 +108,59 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    var isDark: Bool {
+    /// 主题本身偏深（选中后不论系统如何都偏暗阅读）
+    var prefersDarkChrome: Bool {
         switch self {
         case .nightDark, .midnightBlue: return true
         default: return false
         }
     }
 
+    /// 兼容旧调用：是否按深色阅读表面渲染
+    var isDark: Bool { prefersDarkChrome }
+
     static var preferredDark: ReadingTheme { .nightDark }
     static var preferredLight: ReadingTheme { .classicLight }
 
-    /// 跟随系统外观时解析实际主题
-    static func resolved(selected: ReadingTheme, appearance: AppearanceMode, systemScheme: ColorScheme) -> ReadingTheme {
-        let effective: ColorScheme
+    /// 外观模式 → 实际 ColorScheme（不再偷偷替换用户选的阅读主题）
+    static func effectiveColorScheme(appearance: AppearanceMode, systemScheme: ColorScheme) -> ColorScheme {
         switch appearance {
-        case .system: effective = systemScheme
-        case .light: effective = .light
-        case .dark: effective = .dark
-        }
-        if effective == .dark {
-            return selected.isDark ? selected : .preferredDark
-        } else {
-            return selected.isDark ? .preferredLight : selected
+        case .system: return systemScheme
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 
-    var colors: ReadingThemeColors {
+    /// 解析用于渲染的主题：始终尊重用户选择的阅读主题（Forest 不会再被换成 Night）
+    static func resolved(selected: ReadingTheme, appearance: AppearanceMode, systemScheme: ColorScheme) -> ReadingTheme {
+        _ = appearance
+        _ = systemScheme
+        return selected
+    }
+
+    /// 该主题在指定 scheme 下的色板（浅色主题在深色模式下使用同系深色变体）
+    func colors(for scheme: ColorScheme) -> ReadingThemeColors {
+        // 夜间 / 午夜蓝始终深色表面；其余主题随 scheme 切换同系浅/深变体
+        let useDark = prefersDarkChrome || scheme == .dark
         switch self {
         case .classicLight:
-            return ReadingThemeColors(
-                name: displayName,
-                background: Color(hex: "F5F8FC"),
-                cardBackground: Color(hex: "FFFFFF"),
-                primaryText: Color(hex: "1A2B4C"),
-                secondaryText: Color(hex: "6B7A99"),
-                accent: Color(hex: "3B5BDB"),
-                accentSoft: Color(hex: "DCE4FA"),
-                divider: Color(hex: "E4E9F2"),
-                success: Color(hex: "22C55E")
-            )
+            return useDark ? Self.classicDarkColors : Self.classicLightColors
         case .sepiaPaper:
-            return ReadingThemeColors(
-                name: displayName,
-                background: Color(hex: "F7F1E3"),
-                cardBackground: Color(hex: "FCF8ED"),
-                primaryText: Color(hex: "3A2E1F"),
-                secondaryText: Color(hex: "8A7A5C"),
-                accent: Color(hex: "B5722F"),
-                accentSoft: Color(hex: "EFE0C0"),
-                divider: Color(hex: "E6D9B8"),
-                success: Color(hex: "6B8E4E")
-            )
+            return useDark ? Self.sepiaDarkColors : Self.sepiaLightColors
         case .nightDark:
-            return ReadingThemeColors(
-                name: displayName,
-                background: Color(hex: "0B0B0D"),
-                cardBackground: Color(hex: "17171A"),
-                primaryText: Color(hex: "EAEAEC"),
-                secondaryText: Color(hex: "9A9AA2"),
-                accent: Color(hex: "8B95F0"),
-                accentSoft: Color(hex: "2A2A3A"),
-                divider: Color(hex: "2A2A2E"),
-                success: Color(hex: "4ADE80")
-            )
+            return Self.nightColors
         case .midnightBlue:
-            return ReadingThemeColors(
-                name: displayName,
-                background: Color(hex: "0F1A2E"),
-                cardBackground: Color(hex: "16233D"),
-                primaryText: Color(hex: "DDE6F5"),
-                secondaryText: Color(hex: "8595B8"),
-                accent: Color(hex: "5B8DEF"),
-                accentSoft: Color(hex: "1E2F52"),
-                divider: Color(hex: "223252"),
-                success: Color(hex: "5FD4A6")
-            )
+            return Self.midnightColors
         case .forestSage:
-            return ReadingThemeColors(
-                name: displayName,
-                background: Color(hex: "F1F4EC"),
-                cardBackground: Color(hex: "FAFBF7"),
-                primaryText: Color(hex: "2E3B2A"),
-                secondaryText: Color(hex: "6E7C63"),
-                accent: Color(hex: "5B7A52"),
-                accentSoft: Color(hex: "DCE6D2"),
-                divider: Color(hex: "DCE3D3"),
-                success: Color(hex: "4E8E5F")
-            )
+            return useDark ? Self.forestDarkColors : Self.forestLightColors
         case .highContrast:
-            return ReadingThemeColors(
-                name: displayName,
-                background: Color(hex: "FFFFFF"),
-                cardBackground: Color(hex: "FFFFFF"),
-                primaryText: Color(hex: "000000"),
-                secondaryText: Color(hex: "333333"),
-                accent: Color(hex: "0047AB"),
-                accentSoft: Color(hex: "CFE0FF"),
-                divider: Color(hex: "000000"),
-                success: Color(hex: "006400")
-            )
+            return useDark ? Self.highContrastDarkColors : Self.highContrastLightColors
         }
+    }
+
+    /// 默认浅色预览 / 兼容旧 API
+    var colors: ReadingThemeColors {
+        colors(for: prefersDarkChrome ? .dark : .light)
     }
 
     var previewColors: [Color] {
@@ -215,9 +168,9 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
         return [c.accent, c.background, c.cardBackground, c.primaryText]
     }
 
-    /// 兼容原有 ThemeTokens 管线
-    var tokens: ThemeTokens {
-        let c = colors
+    func tokens(for scheme: ColorScheme) -> ThemeTokens {
+        let c = colors(for: scheme)
+        let darkSurface = (scheme == .dark) || prefersDarkChrome
         return ThemeTokens(
             text: c.primaryText,
             muted: c.secondaryText,
@@ -227,12 +180,144 @@ enum ReadingTheme: String, CaseIterable, Codable, Identifiable {
             card: c.cardBackground,
             surface: c.accentSoft,
             track: c.divider,
-            ring: c.accent.opacity(isDark ? 0.22 : 0.14),
+            ring: c.accent.opacity(darkSurface ? 0.28 : 0.14),
             accentSoft: c.accentSoft,
-            shadow: (isDark ? Color.black.opacity(0.4) : c.primaryText.opacity(0.08)),
+            shadow: (darkSurface ? Color.black.opacity(0.45) : c.primaryText.opacity(0.07)),
             success: c.success
         )
     }
+
+    /// 兼容原有 ThemeTokens 管线
+    var tokens: ThemeTokens {
+        tokens(for: prefersDarkChrome ? .dark : .light)
+    }
+
+    // MARK: Refined palettes
+
+    /// 经典蓝白：略暖纸白 + 靛蓝强调，正文对比更稳
+    private static let classicLightColors = ReadingThemeColors(
+        name: "Classic 经典蓝白",
+        background: Color(hex: "F3F6FB"),
+        cardBackground: Color(hex: "FFFFFF"),
+        primaryText: Color(hex: "15233A"),
+        secondaryText: Color(hex: "5C6B86"),
+        accent: Color(hex: "3A5FCD"),
+        accentSoft: Color(hex: "E4EAFB"),
+        divider: Color(hex: "E2E8F2"),
+        success: Color(hex: "2F9B5B")
+    )
+
+    private static let classicDarkColors = ReadingThemeColors(
+        name: "Classic 经典蓝白",
+        background: Color(hex: "0E1219"),
+        cardBackground: Color(hex: "171C26"),
+        primaryText: Color(hex: "E6EBF4"),
+        secondaryText: Color(hex: "8B97AD"),
+        accent: Color(hex: "7B93F0"),
+        accentSoft: Color(hex: "222A3C"),
+        divider: Color(hex: "2A3140"),
+        success: Color(hex: "4ABA78")
+    )
+
+    /// 纸感：偏暖象牙，强调赭石，长时间阅读少刺眼
+    private static let sepiaLightColors = ReadingThemeColors(
+        name: "Sepia 纸感",
+        background: Color(hex: "F6F0E4"),
+        cardBackground: Color(hex: "FBF6EB"),
+        primaryText: Color(hex: "3D2F1E"),
+        secondaryText: Color(hex: "8A7860"),
+        accent: Color(hex: "A86B2D"),
+        accentSoft: Color(hex: "EFE1C4"),
+        divider: Color(hex: "E5D8BC"),
+        success: Color(hex: "6A8A4E")
+    )
+
+    private static let sepiaDarkColors = ReadingThemeColors(
+        name: "Sepia 纸感",
+        background: Color(hex: "1A1611"),
+        cardBackground: Color(hex: "242018"),
+        primaryText: Color(hex: "EDE4D4"),
+        secondaryText: Color(hex: "A89880"),
+        accent: Color(hex: "D4A05A"),
+        accentSoft: Color(hex: "332B20"),
+        divider: Color(hex: "3A3228"),
+        success: Color(hex: "8BB573")
+    )
+
+    /// 夜间：近黑 OLED + 柔和紫蓝强调（降低刺眼饱和）
+    private static let nightColors = ReadingThemeColors(
+        name: "Night 夜间",
+        background: Color(hex: "0A0A0C"),
+        cardBackground: Color(hex: "161618"),
+        primaryText: Color(hex: "ECECEE"),
+        secondaryText: Color(hex: "9898A0"),
+        accent: Color(hex: "9AA3F2"),
+        accentSoft: Color(hex: "252532"),
+        divider: Color(hex: "2C2C32"),
+        success: Color(hex: "5BD98A")
+    )
+
+    /// 午夜蓝：低蓝光深蓝底，强调略提亮便于点按
+    private static let midnightColors = ReadingThemeColors(
+        name: "Midnight 午夜蓝",
+        background: Color(hex: "0C1526"),
+        cardBackground: Color(hex: "141F35"),
+        primaryText: Color(hex: "E2EAF8"),
+        secondaryText: Color(hex: "8A9BB8"),
+        accent: Color(hex: "6B9BF0"),
+        accentSoft: Color(hex: "1A2A48"),
+        divider: Color(hex: "243552"),
+        success: Color(hex: "5FCFB0")
+    )
+
+    /// 松绿：低饱和鼠尾草，强调橄榄绿（深色模式保持绿色调，不再变成紫蓝）
+    private static let forestLightColors = ReadingThemeColors(
+        name: "Forest 松绿",
+        background: Color(hex: "F0F3EB"),
+        cardBackground: Color(hex: "F8FAF5"),
+        primaryText: Color(hex: "243024"),
+        secondaryText: Color(hex: "66735E"),
+        accent: Color(hex: "4F7348"),
+        accentSoft: Color(hex: "DCE8D6"),
+        divider: Color(hex: "D7E0D0"),
+        success: Color(hex: "458B58")
+    )
+
+    private static let forestDarkColors = ReadingThemeColors(
+        name: "Forest 松绿",
+        background: Color(hex: "0F1410"),
+        cardBackground: Color(hex: "181E19"),
+        primaryText: Color(hex: "E4EBE2"),
+        secondaryText: Color(hex: "95A390"),
+        accent: Color(hex: "8FBC8A"),
+        accentSoft: Color(hex: "243028"),
+        divider: Color(hex: "2C382E"),
+        success: Color(hex: "6DBF7E")
+    )
+
+    private static let highContrastLightColors = ReadingThemeColors(
+        name: "高对比度",
+        background: Color(hex: "FFFFFF"),
+        cardBackground: Color(hex: "FFFFFF"),
+        primaryText: Color(hex: "000000"),
+        secondaryText: Color(hex: "2A2A2A"),
+        accent: Color(hex: "0033A0"),
+        accentSoft: Color(hex: "D6E4FF"),
+        divider: Color(hex: "1A1A1A"),
+        success: Color(hex: "0B5C0B")
+    )
+
+    private static let highContrastDarkColors = ReadingThemeColors(
+        name: "高对比度",
+        background: Color(hex: "000000"),
+        cardBackground: Color(hex: "0A0A0A"),
+        primaryText: Color(hex: "FFFFFF"),
+        secondaryText: Color(hex: "D0D0D0"),
+        accent: Color(hex: "5CA8FF"),
+        accentSoft: Color(hex: "1A2740"),
+        divider: Color(hex: "E0E0E0"),
+        success: Color(hex: "5CFF5C")
+    )
 }
 
 /// 兼容旧存储键名 AppColorTheme

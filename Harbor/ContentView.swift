@@ -6,12 +6,12 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        let resolvedTheme = ReadingTheme.resolved(
-            selected: store.colorTheme,
+        let scheme = ReadingTheme.effectiveColorScheme(
             appearance: store.appearanceMode,
             systemScheme: systemColorScheme
         )
-        let tokens = resolvedTheme.tokens
+        let readingTheme = store.colorTheme
+        let tokens = readingTheme.tokens(for: scheme)
         TabView {
             Tab("订阅", systemImage: "newspaper") {
                 FeedsListView()
@@ -32,7 +32,7 @@ struct ContentView: View {
         .tint(tokens.accent)
         .environment(store)
         .environment(\.theme, tokens)
-        .environment(\.readingTheme, resolvedTheme.colors)
+        .environment(\.readingTheme, readingTheme.colors(for: scheme))
         .preferredColorScheme(store.appearanceMode.preferredColorScheme)
         .onChange(of: scenePhase) { _, phase in
             // 进入后台立即刷盘，缩短防抖崩溃窗口
