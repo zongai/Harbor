@@ -276,13 +276,16 @@ struct Article: Identifiable, Codable, Hashable, Sendable {
         return RelativeTimeFormat.string(for: date)
     }
 
-    /// RSS 摘要是否偏短，适合触发全文抓取（不检查源级开关）。
-    /// 以**当前可见正文长度**为准：仅 `hasFullContent` 且正文仍很长时才跳过；
-    /// 正文已被清空且未水合成功时仍应允许抓取，避免永久空白。
+    /// 是否还应自动/静默触发全文抓取（不检查源级开关）。
+    /// - 已成功抓取全文（`hasFullContent`）且正文足够长 → 跳过
+    /// - **尚未**成功抓取时：即使 RSS 摘要偏长也仍尝试（避免长摘要冒充全文）
+    /// - 已标记全文但正文空白/过短 → 仍尝试（缓存丢失可恢复）
     var needsFullContentFetch: Bool {
         let plain = HTMLUtils.stripTags(content)
-        if hasFullContent && plain.count >= 400 { return false }
-        return plain.count < 400
+        if hasFullContent {
+            return plain.count < 400
+        }
+        return true
     }
 }
 

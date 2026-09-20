@@ -1637,14 +1637,13 @@ enum ArticleContentFetcher {
     /// 优先走 WP REST 的站点（HTML 门禁多或前端噪音大）
     private static func prefersWordPressREST(_ host: String?) -> Bool {
         guard let host = host?.lowercased() else { return false }
+        // hartpunkt.de 的 /wp-json 返回 401，走 HTML 选择器即可
         return host == "visualcapitalist.com"
             || host.hasSuffix(".visualcapitalist.com")
             || host == "voronoiapp.com"
             || host.hasSuffix(".voronoiapp.com")
             || host == "spacenews.com"
             || host.hasSuffix(".spacenews.com")
-            || host == "hartpunkt.de"
-            || host.hasSuffix(".hartpunkt.de")
     }
 
     /// 按 slug 拉 WP REST：`/wp-json/wp/v2/posts?slug=...&_embed=1`

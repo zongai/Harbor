@@ -710,10 +710,10 @@ struct ArticleReaderView: View {
             if !silent { fullContentError = "该订阅源已关闭全文获取" }
             return
         }
-        // 自动/静默：正文已足够长则跳过；手动 force 始终重抓
-        let existingPlain = HTMLUtils.stripTags(currentArticle.content)
-        if !force, existingPlain.count >= 400, silent {
-            return
+        // 自动：仅当已确认全文且正文足够长时跳过；勿用「摘要够长」代替成功抓取
+        if silent, !force, currentArticle.hasFullContent {
+            let existingPlain = HTMLUtils.stripTags(currentArticle.content)
+            if existingPlain.count >= 400 { return }
         }
         fullContentError = nil
         isFetchingFull = true
@@ -721,7 +721,9 @@ struct ArticleReaderView: View {
             fullContentHint = force ? "正在重新获取全文…" : "正在获取全文…"
         }
         do {
-            let updated = try await store.fetchFullContent(for: currentArticle, force: force)
+            // 静默自动抓取也勿复用可能只是 RSS 摘要的本地缓存
+            let shouldForce = force || (silent && !currentArticle.hasFullContent)
+            let updated = try await store.fetchFullContent(for: currentArticle, force: shouldForce)
             showTranslated = false
             translatedContent = nil
             let n = HTMLUtils.stripTags(updated.content).count
@@ -738,7 +740,8 @@ struct ArticleReaderView: View {
             }
             return
         } catch {
-            if !silent { fullContentError = error.localizedDescription }
+            // 自动抓取失败也给出轻量提示，便于点重试
+            fullContentError = error.localizedDescription
             fullContentHint = nil
         }
         isFetchingFull = false

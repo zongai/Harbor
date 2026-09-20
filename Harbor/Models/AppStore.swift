@@ -533,13 +533,15 @@ class AppStore: AIService.Runtime {
     /// 超过此长度的正文/译文不进列表内存，只按 link 存 Offline cache
     private static let heavyBodyThreshold = 400
 
-    /// 按需从 OfflineCache 按 **规范化 link** 水合正文与译文（阅读/翻译唯一读路径）
+    /// 按需从 OfflineCache 按 **规范化 link** 水合正文与译文（阅读/翻译唯一读路径）。
+    /// 注意：缓存里可能是 RSS 摘要（evacuate 落盘），**不得**因此把 `hasFullContent` 标为 true，
+    /// 否则长摘要会跳过自动全文抓取，只能靠用户手动「重新获取」。
     func hydratedArticle(_ article: Article) -> Article {
         var a = article
         if a.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let html = OfflineCache.loadArticleBody(link: a.link), !html.isEmpty {
             a.content = html
-            a.hasFullContent = true
+            // 仅恢复正文；hasFullContent 只由成功的 fetchFullContent 写入
         }
         let tc = a.translatedContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if tc.isEmpty, let translated = OfflineCache.loadTranslatedHTML(link: a.link), !translated.isEmpty {
