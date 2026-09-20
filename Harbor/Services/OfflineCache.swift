@@ -149,7 +149,24 @@ enum OfflineCache {
     }
 
     static func hasArticleHTML(link: String) -> Bool {
-        loadArticleHTML(link: link) != nil
+        guard !link.isEmpty else { return false }
+        let file = articlesDir.appendingPathComponent(key(for: link) + ".html")
+        return FileManager.default.fileExists(atPath: file.path)
+    }
+
+    static func saveTranslatedHTML(link: String, html: String) {
+        guard !link.isEmpty, !html.isEmpty else { return }
+        let file = articlesDir.appendingPathComponent(key(for: link) + ".translated.html")
+        try? html.data(using: .utf8)?.write(to: file, options: [.atomic])
+    }
+
+    static func loadTranslatedHTML(link: String) -> String? {
+        guard !link.isEmpty else { return nil }
+        let file = articlesDir.appendingPathComponent(key(for: link) + ".translated.html")
+        guard let data = try? Data(contentsOf: file),
+              let html = String(data: data, encoding: .utf8),
+              !html.isEmpty else { return nil }
+        return html
     }
 
     // MARK: - Feed XML snapshot

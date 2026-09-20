@@ -866,7 +866,7 @@ struct FeedIcon: View {
         }
         if let data = OfflineCache.loadFavicon(key: cacheKey) {
             // 非空且能解码 → 成功缓存；空数据表示曾经失败
-            if !data.isEmpty, let ui = UIImage(data: data), ui.size.width > 1 {
+            if !data.isEmpty, let ui = ImageDownsampling.downsample(data: data, maxPixel: ImageDownsampling.maxPixel(forSidePoints: size * 2)), ui.size.width > 1 {
                 FaviconCache.shared.store(ui, for: cacheKey)
                 image = ui
                 useLetter = false
@@ -884,7 +884,7 @@ struct FeedIcon: View {
             }
         } else if let legacy = OfflineCache.loadImage(url: cacheKey) {
             OfflineCache.saveFavicon(key: cacheKey, data: legacy)
-            if !legacy.isEmpty, let ui = UIImage(data: legacy), ui.size.width > 1 {
+            if !legacy.isEmpty, let ui = ImageDownsampling.downsample(data: legacy, maxPixel: ImageDownsampling.maxPixel(forSidePoints: size * 2)), ui.size.width > 1 {
                 FaviconCache.shared.store(ui, for: cacheKey)
                 image = ui
                 useLetter = false
@@ -918,7 +918,7 @@ struct FeedIcon: View {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { continue }
                 guard data.count >= 32 else { continue }
-                guard let ui = UIImage(data: data), ui.size.width > 1 else { continue }
+                guard let ui = ImageDownsampling.downsample(data: data, maxPixel: ImageDownsampling.maxPixel(forSidePoints: size * 2)), ui.size.width > 1 else { continue }
                 found = ui
                 foundData = data
                 break

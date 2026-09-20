@@ -251,6 +251,46 @@ class AppStore: AIService.Runtime {
         feeds.first(where: { $0.id == feedID })?.articles ?? []
     }
 
+    /// 正文/译文超过此长度则仅保留磁盘，内存中清空以降低常驻 RSS
+    private static let heavyBodyThreshold = 1_200
+
+    /// 按需从 OfflineCache 补齐正文与译文（阅读/翻译用）
+    func hydratedArticle(_ article: Article) -> Article {
+        var a = article
+        if a.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let html = OfflineCache.loadArticleHTML(link: a.link), !html.isEmpty {
+            a.content = html
+            a.hasFullContent = true
+        }
+        let tc = a.translatedContent?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if tc.isEmpty, let translated = OfflineCache.loadTranslatedHTML(link: a.link), !translated.isEmpty {
+            a.translatedContent = translated
+        }
+        return a
+    }
+
+    /// 大正文落盘后从内存剥离（元数据仍在 feeds 中）
+    private func evacuateHeavyBodies(in article: inout Article) {
+        let content = article.content
+        if content.count >= Self.heavyBodyThreshold {
+            OfflineCache.saveArticleHTML(link: article.link, html: content)
+            article.hasFullContent = true
+            article.content = ""
+        }
+        if let translated = article.translatedContent, translated.count >= Self.heavyBodyThreshold {
+            OfflineCache.saveTranslatedHTML(link: article.link, html: translated)
+            article.translatedContent = nil
+        }
+    }
+
+    private func evacuateAllHeavyBodiesInMemory() {
+        for i in feeds.indices {
+            for j in feeds[i].articles.indices {
+                evacuateHeavyBodies(in: &feeds[i].articles[j])
+            }
+        }
+    }
+
     func markAsRead(_ article: Article) {
         for i in feeds.indices {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
@@ -312,6 +352,8 @@ class AppStore: AIService.Runtime {
     func persistSettings() { saveToStorage() }
 
     func updateArticle(_ article: Article) {
+        var article = article
+        evacuateHeavyBodies(in: &article)
         for i in feeds.indices {
             if let j = feeds[i].articles.firstIndex(where: { $0.id == article.id }) {
                 feeds[i].articles[j] = article
@@ -1078,9 +1120,10 @@ class AppStore: AIService.Runtime {
                 continue
             }
             if readArticleLinks.contains(key) { article.isRead = true }
-            if let html = OfflineCache.loadArticleHTML(link: article.link), !html.isEmpty {
-                article.content = html
+            // 仅标记有缓存，不把全文读入内存
+            if OfflineCache.hasArticleHTML(link: article.link) {
                 article.hasFullContent = true
+                article.content = ""
             }
             newArticles.append(article)
         }
@@ -2701,7 +2744,10 @@ class AppStore: AIService.Runtime {
         updated.hasFullContent = true
         // 始终用原始链接做缓存键，避免前缀变化导致缓存失效/重复
         OfflineCache.saveArticleHTML(link: article.link, html: result.contentHTML)
-        updateArticle(updated)
+        var stored = updated
+        evacuateHeavyBodies(in: &stored)
+        updateArticle(stored)
+        // 返回给阅读页的仍是含水合正文的副本
         return updated
     }
 
@@ -3019,6 +3065,8 @@ class AppStore: AIService.Runtime {
         if let loaded = OfflineCache.loadChatConversations() {
             chatConversations = loaded.sorted { $0.updatedAt > $1.updatedAt }
         }
+        // 启动后剥离已落盘的大正文，降低常驻内存
+        evacuateAllHeavyBodiesInMemory()
     }
 
     // MARK: - iCloud 同步

@@ -50,7 +50,9 @@ struct ArticleReaderView: View {
     private var activeID: UUID { currentID ?? article.id }
 
     private var currentArticle: Article {
-        store.feeds.flatMap { $0.articles }.first(where: { $0.id == activeID }) ?? article
+        let base = store.feeds.flatMap { $0.articles }.first(where: { $0.id == activeID }) ?? article
+        // 元数据与正文分离：阅读时按需从磁盘水合
+        return store.hydratedArticle(base)
     }
 
     private var feedArticles: [Article] {

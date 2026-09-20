@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import SafariServices
 
 struct ArticleContentView: View {
@@ -109,24 +110,9 @@ struct ArticleContentView: View {
             AudioLinkPlayerCard(urlString: urlString)
         case .image(let urlString):
             if let url = Self.normalizedImageURL(urlString) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .empty:
-                        // 加载中不占高度，避免原文「大片空白」
-                        EmptyView()
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, AppSpacing.sm)
-                    case .failure:
-                        EmptyView()
-                    @unknown default:
-                        EmptyView()
-                    }
-                }
+                DownsampledArticleImage(url: url)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, AppSpacing.sm)
             }
         case .table(let headers, let rows):
             ArticleTableView(
@@ -1467,5 +1453,53 @@ struct ArticleTableView: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("数据表")
+    }
+}
+
+
+// MARK: - 阅读页配图（降采样）
+
+struct DownsampledArticleImage: View {
+    let url: URL
+    @State private var image: UIImage?
+    /// 阅读栏宽约屏宽，按 2× 屏宽像素上限解码
+    private var maxPixel: CGFloat {
+        ImageDownsampling.maxPixel(forSidePoints: min(UIScreen.main.bounds.width, 680))
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+            }
+        }
+        .task(id: url.absoluteString) {
+            await load()
+        }
+    }
+
+    private func load() async {
+        let key = url.absoluteString
+        if let data = OfflineCache.loadImage(url: key),
+           let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPixel) {
+            image = ui
+            return
+        }
+        do {
+            var request = URLRequest(url: url, timeoutInterval: 20)
+            request.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return }
+            guard !data.isEmpty else { return }
+            OfflineCache.saveImage(url: key, data: data)
+            if let ui = ImageDownsampling.downsample(data: data, maxPixel: maxPixel) {
+                await MainActor.run { image = ui }
+            }
+        } catch {
+            // 静默失败，不占位
+        }
     }
 }

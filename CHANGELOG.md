@@ -80,6 +80,16 @@
 - 刷新：Fetch + XML 解析在 Task.detached，主线程只合并状态
 - 搜索：320ms 防抖、取消上一次任务、默认不扫正文 HTML
 
+## [1.3-81] — 构建中（ui-redesign-experiment）
+
+相对：`v1.3-80` / build163
+
+### 性能
+- 元数据与正文分离：大正文/译文落 OfflineCache，内存按需水合
+- 图片 ImageIO 降采样（Feed 图标 + 阅读页配图）
+- 全文抓取 RequestDeduper 去重
+- 观察面：已读/收藏不再整源替换（articleFlagsEpoch）
+
 ## [Unreleased]
 
 （自上次成功构建以来的改动，将在下次成功构建时归入正式条目。）

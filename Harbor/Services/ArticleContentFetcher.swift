@@ -4,11 +4,13 @@ import Foundation
 /// 参考常见 RSS 阅读器：拉取 HTML → 去噪 → 候选区块打分 → 输出干净 HTML
 enum ArticleContentFetcher {
 
-    struct Result {
+    struct Result: Sendable {
         let title: String?
         let contentHTML: String
         let textLength: Int
     }
+
+    private static let fullContentDeduper = RequestDeduper<Result>()
 
     enum FetchError: LocalizedError {
         case invalidURL
@@ -35,6 +37,13 @@ enum ArticleContentFetcher {
     }
 
     static func fetchFullContent(from urlString: String) async throws -> Result {
+        let key = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await fullContentDeduper.run(key: key) {
+            try await fetchFullContentUnshared(from: key)
+        }
+    }
+
+    private static func fetchFullContentUnshared(from urlString: String) async throws -> Result {
         guard let url = NetworkURLPolicy.validate(urlString) else {
             throw FetchError.invalidURL
         }
