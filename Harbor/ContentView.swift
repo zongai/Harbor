@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var store = AppStore()
     @State private var bookLibrary = BookLibrary()
+    @State private var opdsCatalogs = OPDSCatalogStore()
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.scenePhase) private var scenePhase
 
@@ -33,6 +34,7 @@ struct ContentView: View {
         .tint(tokens.accent)
         .environment(store)
         .environment(bookLibrary)
+        .environment(opdsCatalogs)
         .environment(\.theme, tokens)
         .environment(\.readingTheme, readingTheme.colors(for: scheme))
         .preferredColorScheme(store.appearanceMode.preferredColorScheme)

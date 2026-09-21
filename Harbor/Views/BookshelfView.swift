@@ -1,47 +1,48 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 书架（Phase 2：本地导入 + 列表；阅读器 / OPDS 后续 Phase）
+/// 书架：本地书籍 + OPDS 书库入口
 struct BookshelfView: View {
     @Environment(BookLibrary.self) private var library
+    @Environment(OPDSCatalogStore.self) private var opdsCatalogs
     @Environment(\.theme) private var theme
     @State private var showImporter = false
+    @State private var showAddOPDS = false
     @State private var importError: String?
+
+    private var recentBooks: [Book] {
+        library.books
+            .filter { $0.lastReadDate != nil }
+            .sorted { ($0.lastReadDate ?? .distantPast) > ($1.lastReadDate ?? .distantPast) }
+            .prefix(8)
+            .map { $0 }
+    }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if library.books.isEmpty {
-                    ContentUnavailableView {
-                        Label {
-                            Text("暂无书籍")
-                                .font(AppTypography.section())
-                        } icon: {
-                            Image(systemName: "books.vertical")
-                                .foregroundStyle(theme.muted)
+            List {
+                if !recentBooks.isEmpty {
+                    Section("最近阅读") {
+                        ForEach(recentBooks) { book in
+                            NavigationLink(value: book.id) {
+                                BookRow(book: book)
+                            }
+                            .listRowBackground(Color.clear)
                         }
-                    } description: {
-                        Text("导入 EPUB 后显示在书架。OPDS 与阅读器将在后续版本提供。")
+                    }
+                }
+
+                Section("本地书籍") {
+                    if library.books.isEmpty {
+                        Text("尚未导入书籍")
                             .font(AppTypography.body())
                             .foregroundStyle(theme.muted)
-                    } actions: {
-                        Button("导入 EPUB") { showImporter = true }
-                            .buttonStyle(.borderedProminent)
-                            .tint(theme.accent)
-                    }
-                } else {
-                    List {
+                            .listRowBackground(Color.clear)
+                    } else {
                         ForEach(library.books) { book in
                             NavigationLink(value: book.id) {
                                 BookRow(book: book)
                             }
-                            .listRowInsets(EdgeInsets(
-                                top: 8,
-                                leading: AppLayout.listHorizontalPadding,
-                                bottom: 8,
-                                trailing: AppLayout.listHorizontalPadding
-                            ))
-                            .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
@@ -52,15 +53,46 @@ struct BookshelfView: View {
                             }
                         }
                     }
-                    .listStyle(.plain)
-                    .navigationDestination(for: UUID.self) { id in
-                        BookReaderView(bookID: id)
+                }
+
+                Section("OPDS") {
+                    ForEach(opdsCatalogs.catalogs) { cat in
+                        NavigationLink {
+                            OPDSBrowserView(rootTitle: cat.title, rootURL: cat.url)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(cat.title)
+                                    .font(AppTypography.listTitle())
+                                Text(cat.url)
+                                    .font(AppTypography.caption())
+                                    .foregroundStyle(theme.muted)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .listRowBackground(Color.clear)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                opdsCatalogs.remove(id: cat.id)
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                        }
                     }
+                    Button {
+                        showAddOPDS = true
+                    } label: {
+                        Label("添加 OPDS 书库", systemImage: "plus.circle")
+                    }
+                    .listRowBackground(Color.clear)
                 }
             }
+            .listStyle(.insetGrouped)
             .appScreenBackground()
             .navigationTitle("书籍")
             .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(for: UUID.self) { id in
+                BookReaderView(bookID: id)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -99,6 +131,16 @@ struct BookshelfView: View {
                     }
                 case .failure(let error):
                     importError = error.localizedDescription
+                }
+            }
+            .sheet(isPresented: $showAddOPDS) {
+                NavigationStack {
+                    AddOPDSCatalogView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("关闭") { showAddOPDS = false }
+                            }
+                        }
                 }
             }
             .alert("导入失败", isPresented: Binding(
