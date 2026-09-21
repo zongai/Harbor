@@ -63,6 +63,11 @@ final class BookLibrary {
         let accessed = sourceURL.startAccessingSecurityScopedResource()
         defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
 
+        let ext = sourceURL.pathExtension.lowercased()
+        if !ext.isEmpty, ext != "epub", ext != "zip" {
+            throw BookImportError.io("请选择 .epub 文件（当前：.\(ext)）")
+        }
+
         let bookID = UUID()
         let dir = Self.bookDirectory(id: bookID)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

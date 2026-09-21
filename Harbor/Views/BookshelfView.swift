@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// 书架：本地书籍 + OPDS 书库入口
@@ -123,17 +124,10 @@ struct BookshelfView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [
-                    UTType(filenameExtension: "epub") ?? .data,
-                    .data
-                ],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
+            .sheet(isPresented: $showImporter) {
+                EPUBDocumentPicker { url in
+                    showImporter = false
+                    guard let url else { return }
                     Task {
                         do {
                             _ = try await library.importEPUB(from: url)
@@ -141,9 +135,8 @@ struct BookshelfView: View {
                             importError = error.localizedDescription
                         }
                     }
-                case .failure(let error):
-                    importError = error.localizedDescription
                 }
+                .ignoresSafeArea()
             }
             .sheet(isPresented: $showAddOPDS) {
                 NavigationStack {
@@ -221,5 +214,46 @@ private struct BookRow: View {
         }
         .frame(width: 52, height: 72)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+
+/// 使用 UIDocumentPicker，类型放宽到 item/data/zip/epub，避免 .epub 在文件 App 中不可选
+struct EPUBDocumentPicker: UIViewControllerRepresentable {
+    var onPick: (URL?) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        var types: [UTType] = [.item, .data, .content]
+        if let epub = UTType(filenameExtension: "epub") {
+            types.insert(epub, at: 0)
+        }
+        if let zip = UTType(filenameExtension: "zip") {
+            types.insert(zip, at: 0)
+        }
+        // IDPF / EPUB 常用 UTI
+        if let idpf = UTType("org.idpf.epub-container") {
+            types.insert(idpf, at: 0)
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL?) -> Void
+        init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onPick(urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onPick(nil)
+        }
     }
 }
