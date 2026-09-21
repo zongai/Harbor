@@ -489,27 +489,31 @@ final class BookTTSController {
     ) {
         cacheTask?.cancel()
         var chapters = book.chapters.sorted { $0.index < $1.index }
-        let startIdx = fromChapterIndex ?? BookJobProgress.loadTTS(bookID: book.id)
-        if let from = startIdx {
-            chapters = chapters.filter { $0.index >= from }
-        }
+        let startIdx = fromChapterIndex ?? BookJobProgress.resolveTTSStart(book: book)
+        chapters = chapters.filter { $0.index >= startIdx }
         guard !chapters.isEmpty else {
-            errorMessage = "没有章节可缓存"
+            BookJobProgress.clearTTS(bookID: book.id)
+            statusText = "全书语音已全部缓存"
+            cacheProgress = 1
+            onProgress?(1, "全书语音已全部缓存")
             return
         }
-        // 断点：记录任务进度，杀进程后可从该章继续
-        BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: fromChapterIndex ?? chapters.first?.index ?? 0)
+        BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: startIdx, status: "running")
         isCaching = true
         cacheProgress = 0
-        statusText = "全书语音…"
-        let totalAll = max(book.chapters.count, 1)
+        statusText = "从第 \(startIdx + 1) 章继续缓存…"
         cacheTask = Task {
             let my = session
             let dir = BookLibrary.bookDirectory(id: book.id)
             let concurrency = Self.ttsCacheConcurrency
+            var lastChapter = startIdx
             for (ci, ch) in chapters.enumerated() {
-                if Task.isCancelled || my != session { break }
-                BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: ch.index)
+                if Task.isCancelled || my != session {
+                    BookJobProgress.markTTSInterrupted(bookID: book.id, chapterIndex: lastChapter)
+                    break
+                }
+                lastChapter = ch.index
+                BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: ch.index, status: "running")
                 let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
                 let segs = Self.segments(fromHTML: html, chapterID: ch.id)
                 guard !segs.isEmpty else {
@@ -518,7 +522,6 @@ final class BookTTSController {
                     onProgress?(frac, "跳过空章 第\(ch.index + 1)")
                     continue
                 }
-                // 章内有限并发；单段失败不中止整书
                 var segDone = 0
                 let segTotal = segs.count
                 await withTaskGroup(of: Bool.self) { group in
@@ -558,15 +561,24 @@ final class BookTTSController {
                         }
                     }
                 }
+                if Task.isCancelled || my != session {
+                    BookJobProgress.markTTSInterrupted(bookID: book.id, chapterIndex: ch.index)
+                    break
+                }
             }
             if my == session {
                 isCaching = false
-                statusText = "全书语音已缓存"
-                cacheProgress = 1
-                BookJobProgress.clearTTS(bookID: book.id)
-                onProgress?(1, "全书语音已缓存")
+                if Task.isCancelled {
+                    BookJobProgress.markTTSInterrupted(bookID: book.id, chapterIndex: lastChapter)
+                    statusText = "已暂停，可继续"
+                    onProgress?(cacheProgress, "已暂停，可从第 \(lastChapter + 1) 章继续")
+                } else {
+                    statusText = "全书语音已缓存"
+                    cacheProgress = 1
+                    BookJobProgress.clearTTS(bookID: book.id)
+                    onProgress?(1, "全书语音已缓存")
+                }
             }
-            _ = totalAll
         }
     }
 
@@ -626,7 +638,7 @@ private actor TTSInFlight {
     }
 }
 
-// MARK: - 全书任务轻量断点（仅记起始章索引，音频/译文仍以文件为准）
+// MARK: - 全书任务断点（可从上次停止处继续）
 
 enum BookJobProgress {
     private static var dir: URL {
@@ -644,40 +656,120 @@ enum BookJobProgress {
     struct Snapshot: Codable {
         var fromChapterIndex: Int
         var updatedAt: Date
+        /// running = 进行中/被中断；completed = 全书完成（文件通常会被删）
+        var status: String
+        var message: String?
+
+        init(fromChapterIndex: Int, updatedAt: Date = Date(), status: String = "running", message: String? = nil) {
+            self.fromChapterIndex = fromChapterIndex
+            self.updatedAt = updatedAt
+            self.status = status
+            self.message = message
+        }
     }
 
-    static func saveTTS(bookID: UUID, fromChapterIndex: Int) {
-        let s = Snapshot(fromChapterIndex: fromChapterIndex, updatedAt: Date())
+    // MARK: TTS
+
+    static func saveTTS(bookID: UUID, fromChapterIndex: Int, status: String = "running", message: String? = nil) {
+        let s = Snapshot(fromChapterIndex: fromChapterIndex, status: status, message: message)
         if let data = try? JSONEncoder().encode(s) {
             try? data.write(to: url(bookID: bookID, kind: "tts"), options: [.atomic])
         }
     }
 
-    static func loadTTS(bookID: UUID) -> Int? {
+    static func loadTTSSnapshot(bookID: UUID) -> Snapshot? {
         guard let data = try? Data(contentsOf: url(bookID: bookID, kind: "tts")),
               let s = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
-        return s.fromChapterIndex
+        return s
+    }
+
+    static func loadTTS(bookID: UUID) -> Int? {
+        loadTTSSnapshot(bookID: bookID)?.fromChapterIndex
+    }
+
+    static func hasIncompleteTTS(bookID: UUID) -> Bool {
+        guard let s = loadTTSSnapshot(bookID: bookID) else { return false }
+        return s.status == "running" || s.status == "interrupted"
     }
 
     static func clearTTS(bookID: UUID) {
         try? FileManager.default.removeItem(at: url(bookID: bookID, kind: "tts"))
     }
 
-    static func saveTranslate(bookID: UUID, fromChapterIndex: Int) {
-        let s = Snapshot(fromChapterIndex: fromChapterIndex, updatedAt: Date())
+    static func markTTSInterrupted(bookID: UUID, chapterIndex: Int) {
+        saveTTS(bookID: bookID, fromChapterIndex: chapterIndex, status: "interrupted", message: "已暂停，可继续")
+    }
+
+    // MARK: Translate
+
+    static func saveTranslate(bookID: UUID, fromChapterIndex: Int, status: String = "running", message: String? = nil) {
+        let s = Snapshot(fromChapterIndex: fromChapterIndex, status: status, message: message)
         if let data = try? JSONEncoder().encode(s) {
             try? data.write(to: url(bookID: bookID, kind: "translate"), options: [.atomic])
         }
     }
 
-    static func loadTranslate(bookID: UUID) -> Int? {
+    static func loadTranslateSnapshot(bookID: UUID) -> Snapshot? {
         guard let data = try? Data(contentsOf: url(bookID: bookID, kind: "translate")),
               let s = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
-        return s.fromChapterIndex
+        return s
+    }
+
+    static func loadTranslate(bookID: UUID) -> Int? {
+        loadTranslateSnapshot(bookID: bookID)?.fromChapterIndex
+    }
+
+    static func hasIncompleteTranslate(bookID: UUID) -> Bool {
+        guard let s = loadTranslateSnapshot(bookID: bookID) else { return false }
+        return s.status == "running" || s.status == "interrupted"
     }
 
     static func clearTranslate(bookID: UUID) {
         try? FileManager.default.removeItem(at: url(bookID: bookID, kind: "translate"))
+    }
+
+    static func markTranslateInterrupted(bookID: UUID, chapterIndex: Int) {
+        saveTranslate(bookID: bookID, fromChapterIndex: chapterIndex, status: "interrupted", message: "已暂停，可继续")
+    }
+
+    /// 智能续跑起点：优先断点文件；否则扫描首个未完成章
+    static func resolveTranslateStart(book: Book, targetLanguage: String) -> Int {
+        if let snap = loadTranslateSnapshot(bookID: book.id),
+           snap.status == "running" || snap.status == "interrupted" {
+            return snap.fromChapterIndex
+        }
+        let chapters = book.chapters.sorted { $0.index < $1.index }
+        for ch in chapters {
+            if let existing = BookTranslationService.load(bookID: book.id, chapterID: ch.id),
+               existing.status == .done,
+               existing.targetLanguage == targetLanguage,
+               !existing.paragraphs.isEmpty {
+                continue
+            }
+            return ch.index
+        }
+        return chapters.first?.index ?? 0
+    }
+
+    /// TTS 续跑：断点文件，或首个仍有未缓存段的章（粗检：目录是否为空）
+    static func resolveTTSStart(book: Book) -> Int {
+        if let snap = loadTTSSnapshot(bookID: book.id),
+           snap.status == "running" || snap.status == "interrupted" {
+            return snap.fromChapterIndex
+        }
+        let chapters = book.chapters.sorted { $0.index < $1.index }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let ttsRoot = base.appendingPathComponent("Harbor/TTSAudio/\(book.id.uuidString)", isDirectory: true)
+        for ch in chapters {
+            let chDir = ttsRoot.appendingPathComponent(ch.id.uuidString, isDirectory: true)
+            // 无目录或空 → 视为未完成
+            if let files = try? FileManager.default.contentsOfDirectory(atPath: chDir.path), !files.isEmpty {
+                continue
+            }
+            return ch.index
+        }
+        return chapters.first?.index ?? 0
     }
 }
 

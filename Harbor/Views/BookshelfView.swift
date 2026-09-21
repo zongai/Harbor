@@ -16,10 +16,12 @@ struct BookshelfView: View {
     @State private var batchProgress: Double = 0
     @State private var isBatchWorking = false
     @State private var bookBatchTTS = BookTTSController()
+    @State private var batchTask: Task<Void, Never>?
     /// 全书任务：选起始章
     @State private var batchPickerBook: Book?
     @State private var batchPickerKind: BookBatchKind = .translate
     @State private var batchStartChapterIndex: Int = 0
+    @State private var batchWorkingBookID: UUID?
 
     private var recentBooks: [Book] {
         library.books
@@ -153,9 +155,19 @@ struct BookshelfView: View {
                             .foregroundStyle(theme.muted)
                             .multilineTextAlignment(.center)
                         Button("取消") {
+                            batchTask?.cancel()
                             bookBatchTTS.stop()
+                            if let id = batchWorkingBookID {
+                                if batchPickerKind == .tts || bookBatchTTS.isCaching {
+                                    let idx = BookJobProgress.loadTTS(bookID: id) ?? 0
+                                    BookJobProgress.markTTSInterrupted(bookID: id, chapterIndex: idx)
+                                } else {
+                                    let idx = BookJobProgress.loadTranslate(bookID: id) ?? 0
+                                    BookJobProgress.markTranslateInterrupted(bookID: id, chapterIndex: idx)
+                                }
+                            }
                             isBatchWorking = false
-                            batchProgressText = nil
+                            batchProgressText = "已暂停，可继续"
                         }
                         .font(AppTypography.caption())
                     }
@@ -216,20 +228,46 @@ struct BookshelfView: View {
 
     @ViewBuilder
     private func bookContextMenu(_ book: Book) -> some View {
+        let canResumeTranslate = BookJobProgress.hasIncompleteTranslate(bookID: book.id)
+        let canResumeTTS = BookJobProgress.hasIncompleteTTS(bookID: book.id)
+        let resumeTranslateIdx = BookJobProgress.resolveTranslateStart(
+            book: book,
+            targetLanguage: store.targetLanguage.rawValue
+        )
+        let resumeTTSIdx = BookJobProgress.resolveTTSStart(book: book)
+
+        if canResumeTranslate {
+            Button {
+                runWholeBookTranslate(book, from: resumeTranslateIdx)
+            } label: {
+                Label("继续翻译（第 \(resumeTranslateIdx + 1) 章）", systemImage: "arrow.clockwise")
+            }
+            .disabled(isBatchWorking)
+        }
         Button {
             batchPickerKind = .translate
             batchPickerBook = book
         } label: {
-            Label("全书翻译…", systemImage: "character.book.closed")
+            Label(canResumeTranslate ? "全书翻译（重选起点）…" : "全书翻译…", systemImage: "character.book.closed")
         }
         .disabled(isBatchWorking)
+
+        if canResumeTTS {
+            Button {
+                runWholeBookTTSCache(book, from: resumeTTSIdx)
+            } label: {
+                Label("继续 TTS（第 \(resumeTTSIdx + 1) 章）", systemImage: "arrow.clockwise")
+            }
+            .disabled(isBatchWorking)
+        }
         Button {
             batchPickerKind = .tts
             batchPickerBook = book
         } label: {
-            Label("全书 TTS 缓存…", systemImage: "arrow.down.circle")
+            Label(canResumeTTS ? "全书 TTS（重选起点）…" : "全书 TTS 缓存…", systemImage: "arrow.down.circle")
         }
         .disabled(isBatchWorking)
+
         Divider()
         Button(role: .destructive) {
             library.deleteBook(id: book.id)
@@ -239,20 +277,25 @@ struct BookshelfView: View {
     }
 
     private func suggestedStartIndex(for book: Book, kind: BookBatchKind) -> Int {
-        let resume: Int?
         switch kind {
-        case .translate: resume = BookJobProgress.loadTranslate(bookID: book.id)
-        case .tts: resume = BookJobProgress.loadTTS(bookID: book.id)
+        case .translate:
+            return BookJobProgress.resolveTranslateStart(
+                book: book,
+                targetLanguage: store.targetLanguage.rawValue
+            )
+        case .tts:
+            return BookJobProgress.resolveTTSStart(book: book)
         }
-        if let r = resume { return r }
-        return book.chapters.map(\.index).min() ?? 0
     }
 
     private func runWholeBookTranslate(_ book: Book, from startIdx: Int) {
+        batchTask?.cancel()
         isBatchWorking = true
+        batchWorkingBookID = book.id
+        batchPickerKind = .translate
         batchProgress = 0
-        batchProgressText = "准备全书翻译…"
-        Task {
+        batchProgressText = "从第 \(startIdx + 1) 章继续翻译…"
+        batchTask = Task {
             do {
                 try await BookTranslationService.translateBook(
                     book: book,
@@ -267,34 +310,41 @@ struct BookshelfView: View {
                 }
                 batchProgressText = "全书翻译完成"
             } catch is CancellationError {
-                batchProgressText = "已取消"
+                batchProgressText = "已暂停，可继续"
             } catch {
                 importError = error.localizedDescription
+                batchProgressText = "已中断，可继续"
             }
             isBatchWorking = false
         }
     }
 
     private func runWholeBookTTSCache(_ book: Book, from startIdx: Int) {
+        batchTask?.cancel()
         isBatchWorking = true
+        batchWorkingBookID = book.id
+        batchPickerKind = .tts
         batchProgress = 0
-        batchProgressText = "准备全书语音缓存…"
+        batchProgressText = "从第 \(startIdx + 1) 章继续缓存…"
         let voice = store.ttsVoice.isEmpty ? nil : store.ttsVoice
         bookBatchTTS.precacheBook(book: book, voice: voice, fromChapterIndex: startIdx) { p, msg in
             batchProgress = p
             batchProgressText = msg
-            if p >= 1 {
+            if p >= 1 || msg.contains("暂停") {
                 isBatchWorking = false
             }
         }
-        Task {
-            while isBatchWorking && bookBatchTTS.isCaching {
+        batchTask = Task {
+            while !Task.isCancelled && isBatchWorking && bookBatchTTS.isCaching {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 batchProgress = bookBatchTTS.cacheProgress
                 if let s = bookBatchTTS.statusText { batchProgressText = s }
             }
             if let err = bookBatchTTS.errorMessage {
                 importError = err
+            }
+            if bookBatchTTS.statusText?.contains("暂停") == true {
+                batchProgressText = bookBatchTTS.statusText
             }
             isBatchWorking = false
         }
@@ -319,11 +369,30 @@ private struct BookBatchStartPicker: View {
         book.chapters.sorted { $0.index < $1.index }
     }
 
+    private var hasResume: Bool {
+        switch kind {
+        case .translate: return BookJobProgress.hasIncompleteTranslate(bookID: book.id)
+        case .tts: return BookJobProgress.hasIncompleteTTS(bookID: book.id)
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                if hasResume {
+                    Section {
+                        Text("上次停在第 \(initialIndex + 1) 章。可直接继续，或改选其他起点。已完成的章节/段落会自动跳过。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button("从断点继续（第 \(initialIndex + 1) 章）") {
+                            onConfirm(initialIndex)
+                        }
+                    }
+                }
                 Section {
-                    Text(kind == .translate ? "从选定章节开始翻译（之前的章节跳过）。已译章节仍会跳过。" : "从选定章节开始缓存语音。已有音频文件会自动命中，不重复请求。")
+                    Text(kind == .translate
+                         ? "从选定章节开始翻译。已译章节会跳过，不会重复请求。"
+                         : "从选定章节开始缓存语音。已有音频会命中缓存，不重复合成。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -344,7 +413,9 @@ private struct BookBatchStartPicker: View {
                     Button("取消", action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("开始") { onConfirm(selectedIndex) }
+                    Button(hasResume && selectedIndex == initialIndex ? "继续" : "开始") {
+                        onConfirm(selectedIndex)
+                    }
                 }
             }
             .onAppear { selectedIndex = initialIndex }

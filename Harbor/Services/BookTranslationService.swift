@@ -247,47 +247,61 @@ enum BookTranslationService {
         onProgress: ((Double, String) -> Void)? = nil
     ) async throws {
         var chapters = book.chapters.sorted { $0.index < $1.index }
-        let startIdx = fromChapterIndex ?? BookJobProgress.loadTranslate(bookID: book.id)
-        if let from = startIdx {
-            chapters = chapters.filter { $0.index >= from }
-        }
+        let startIdx = fromChapterIndex
+            ?? BookJobProgress.resolveTranslateStart(book: book, targetLanguage: targetLanguage.rawValue)
+        chapters = chapters.filter { $0.index >= startIdx }
         guard !chapters.isEmpty else {
-            throw TranslationError.apiError("没有章节可翻译")
+            BookJobProgress.clearTranslate(bookID: book.id)
+            onProgress?(1, "全书已全部译完")
+            return
         }
         let dir = BookLibrary.bookDirectory(id: book.id)
-        for (i, ch) in chapters.enumerated() {
-            if Task.isCancelled { throw CancellationError() }
-            BookJobProgress.saveTranslate(bookID: book.id, fromChapterIndex: ch.index)
-            if let existing = load(bookID: book.id, chapterID: ch.id),
-               existing.status == .done,
-               existing.targetLanguage == targetLanguage.rawValue,
-               !existing.paragraphs.isEmpty {
+        var currentChapter = startIdx
+        do {
+            for (i, ch) in chapters.enumerated() {
+                if Task.isCancelled {
+                    BookJobProgress.markTranslateInterrupted(bookID: book.id, chapterIndex: ch.index)
+                    throw CancellationError()
+                }
+                currentChapter = ch.index
+                BookJobProgress.saveTranslate(bookID: book.id, fromChapterIndex: ch.index, status: "running")
+                if let existing = load(bookID: book.id, chapterID: ch.id),
+                   existing.status == .done,
+                   existing.targetLanguage == targetLanguage.rawValue,
+                   !existing.paragraphs.isEmpty {
+                    onProgress?(
+                        Double(i + 1) / Double(chapters.count),
+                        "跳过已译 第\(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
+                    )
+                    continue
+                }
+                let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
+                onProgress?(
+                    Double(i) / Double(chapters.count),
+                    "翻译第 \(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
+                )
+                _ = try await translateChapter(
+                    bookID: book.id,
+                    chapterID: ch.id,
+                    html: html,
+                    targetLanguage: targetLanguage,
+                    store: store,
+                    onProgress: nil
+                )
                 onProgress?(
                     Double(i + 1) / Double(chapters.count),
-                    "跳过已译 第\(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
+                    "完成 第\(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
                 )
-                continue
             }
-            let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
-            onProgress?(
-                Double(i) / Double(chapters.count),
-                "翻译第 \(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
-            )
-            _ = try await translateChapter(
-                bookID: book.id,
-                chapterID: ch.id,
-                html: html,
-                targetLanguage: targetLanguage,
-                store: store,
-                onProgress: nil
-            )
-            onProgress?(
-                Double(i + 1) / Double(chapters.count),
-                "完成 第\(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
-            )
+            BookJobProgress.clearTranslate(bookID: book.id)
+            onProgress?(1, "全书翻译完成")
+        } catch is CancellationError {
+            BookJobProgress.markTranslateInterrupted(bookID: book.id, chapterIndex: currentChapter)
+            throw CancellationError()
+        } catch {
+            BookJobProgress.markTranslateInterrupted(bookID: book.id, chapterIndex: currentChapter)
+            throw error
         }
-        BookJobProgress.clearTranslate(bookID: book.id)
-        onProgress?(1, "全书翻译完成")
     }
 
     static func clearBook(bookID: UUID) {
