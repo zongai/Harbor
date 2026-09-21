@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var store = AppStore()
+    @State private var bookLibrary = BookLibrary()
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.scenePhase) private var scenePhase
 
@@ -22,12 +23,16 @@ struct ContentView: View {
             Tab("对话", systemImage: "bubble.left.and.bubble.right") {
                 AIChatView()
             }
+            Tab("书籍", systemImage: "books.vertical") {
+                BookshelfView()
+            }
             Tab("设置", systemImage: "gearshape") {
                 SettingsView()
             }
         }
         .tint(tokens.accent)
         .environment(store)
+        .environment(bookLibrary)
         .environment(\.theme, tokens)
         .environment(\.readingTheme, readingTheme.colors(for: scheme))
         .preferredColorScheme(store.appearanceMode.preferredColorScheme)
