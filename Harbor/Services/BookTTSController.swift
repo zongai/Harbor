@@ -389,20 +389,24 @@ final class BookTTSController {
         }
         // 同 cacheKey 只允许一路 in-flight 合成（预取与播放共享）
         let dedupeKey = "\(bookID.uuidString)|\(chapterID.uuidString)|\(cacheKey)|\(resolved)"
+        let text = segment.text
+        let outURL = url
         let data = try await TTSInFlight.shared.run(key: dedupeKey) {
-            if let cached = try? Data(contentsOf: url), !cached.isEmpty {
+            if let cached = try? Data(contentsOf: outURL), !cached.isEmpty {
                 return cached
             }
+            // 取消：依赖 Task 取消（stop() 会 cancel play/cache Task）；避免捕获 MainActor self
             let data = try await EdgeTTS.synthesize(
-                text: segment.text,
+                text: text,
                 voice: resolved,
                 rate: "+0%"
             ) {
-                session != self.session
+                Task.isCancelled
             }
-            try? data.write(to: url, options: [.atomic])
+            try? data.write(to: outURL, options: [.atomic])
             return data
         }
+        if session != self.session { throw EdgeTTS.TTSError.cancelled }
         return data
     }
 
