@@ -14,6 +14,10 @@ final class BookTTSController {
     var segmentCount = 0
     var statusText: String?
     var errorMessage: String?
+    /// 当前正在朗读的段落文本（供阅读页高亮）
+    var currentSegmentText: String = ""
+    /// 当前队列只读快照（朗读时用于分段跟随）
+    var activeSegments: [Segment] = []
 
     /// 0.5 ... 3.0，仅影响 AVAudioPlayer.rate
     var playbackRate: Double = 1.0 {
@@ -150,6 +154,8 @@ final class BookTTSController {
         isLoading = false
         isCaching = false
         statusText = nil
+        currentSegmentText = ""
+        activeSegments = []
     }
 
     func toggleChapter(
@@ -198,8 +204,10 @@ final class BookTTSController {
             return
         }
         queue = segs
+        activeSegments = segs
         segmentCount = segs.count
         segmentIndex = 0
+        currentSegmentText = segs.first?.text ?? ""
         playTask = Task { await runQueue(bookID: bookID, chapterID: chapterID, voice: voice) }
     }
 
@@ -277,6 +285,7 @@ final class BookTTSController {
         for (i, seg) in queue.enumerated() {
             if Task.isCancelled || my != session { return }
             segmentIndex = i
+            currentSegmentText = seg.text
             statusText = "朗读 \(i + 1)/\(queue.count)"
             isLoading = true
             do {

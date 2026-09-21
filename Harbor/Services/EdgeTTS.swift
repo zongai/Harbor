@@ -335,6 +335,8 @@ final class EdgeTTSPlayer: ObservableObject {
     @Published var isPlaying = false
     @Published var isLoading = false
     @Published var errorMessage: String?
+    /// 0...1，随播放进度更新，供阅读页滚动跟随
+    @Published var playbackProgress: Double = 0
 
     private var player: AVAudioPlayer?
     private var session = 0
@@ -345,6 +347,7 @@ final class EdgeTTSPlayer: ObservableObject {
         player = nil
         isPlaying = false
         isLoading = false
+        playbackProgress = 0
     }
 
     func toggle(text: String, voice: String?, rate: Double = 1.0) async {
@@ -374,13 +377,19 @@ final class EdgeTTSPlayer: ObservableObject {
             player = p
             isLoading = false
             isPlaying = true
+            playbackProgress = 0
             p.play()
-            // Poll until finished
+            // Poll until finished；同步进度供 UI 跟随
             while p.isPlaying {
                 if mySession != session { return }
-                try await Task.sleep(nanoseconds: 200_000_000)
+                let dur = p.duration
+                if dur > 0.05 {
+                    playbackProgress = min(1, max(0, p.currentTime / dur))
+                }
+                try await Task.sleep(nanoseconds: 120_000_000)
             }
             if mySession == session {
+                playbackProgress = 1
                 isPlaying = false
                 player = nil
             }

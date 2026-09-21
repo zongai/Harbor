@@ -62,6 +62,7 @@ struct BookReaderView: View {
 
     @ViewBuilder
     private func readerBody(_ book: Book) -> some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
                 if let ch = currentChapter {
@@ -98,14 +99,36 @@ struct BookReaderView: View {
                         }
                         .padding(.vertical, 8)
                     }
-                    // 复用 RSS 正文组件：选区 + AI 解释
-                    ArticleContentView(
-                        html: displayHTML,
-                        fontSize: store.fontSize,
-                        prefersChineseTypography: prefersChineseForDisplay(book),
-                        articleTitle: currentChapter?.title ?? ""
-                    )
-                    .id("\(readingMode.rawValue)-\(currentChapter?.id.uuidString ?? "")-\(chapterTranslation?.updatedAt.timeIntervalSince1970 ?? 0)")
+                    if bookTTS.isPlaying || bookTTS.isLoading, !bookTTS.activeSegments.isEmpty {
+                        // TTS 进行中：分段展示并跟随当前段
+                        VStack(alignment: .leading, spacing: AppSpacing.md) {
+                            ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.element.id) { idx, seg in
+                                Text(seg.text)
+                                    .font(AppTypography.body(size: store.fontSize))
+                                    .foregroundStyle(theme.text)
+                                    .lineSpacing(6)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                            .fill(idx == bookTTS.segmentIndex
+                                                  ? theme.accent.opacity(0.18)
+                                                  : Color.clear)
+                                    )
+                                    .id("tts-seg-\(idx)")
+                            }
+                        }
+                    } else {
+                        // 复用 RSS 正文组件：选区 + AI 解释
+                        ArticleContentView(
+                            html: displayHTML,
+                            fontSize: store.fontSize,
+                            prefersChineseTypography: prefersChineseForDisplay(book),
+                            articleTitle: currentChapter?.title ?? ""
+                        )
+                        .id("\(readingMode.rawValue)-\(currentChapter?.id.uuidString ?? "")-\(chapterTranslation?.updatedAt.timeIntervalSince1970 ?? 0)")
+                    }
                 }
             }
             .padding(.horizontal, AppLayout.readingHorizontalPadding)
@@ -207,6 +230,12 @@ struct BookReaderView: View {
                 .accessibilityLabel("章节目录")
             }
         }
+        .onChange(of: bookTTS.segmentIndex) { _, idx in
+            guard bookTTS.isPlaying || bookTTS.isLoading else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo("tts-seg-\(idx)", anchor: .center)
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if showChrome {
                 chapterChrome
@@ -249,6 +278,7 @@ struct BookReaderView: View {
             }
             .presentationDetents([.medium, .large])
         }
+        } // ScrollViewReader
         .preferredColorScheme(readerStatusBarScheme)
         .onChange(of: chapterIndex) { _, _ in
             Task { await loadCurrentChapter() }

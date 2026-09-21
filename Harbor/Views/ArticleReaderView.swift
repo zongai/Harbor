@@ -278,6 +278,17 @@ struct ArticleReaderView: View {
                 .padding(.top, AppSpacing.xl)
                 .padding(.bottom, 72)
                 .readingColumn()
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ArticleContentHeightKey.self,
+                            value: geo.size.height
+                        )
+                    }
+                )
+
+                // TTS 跟随锚点（按内容高度比例）
+                Color.clear.frame(height: 1).id("tts-follow")
             }
             // 整页内容随文章 id 重建，避免沿用上一篇的 contentOffset
             .id(activeID)
@@ -558,6 +569,16 @@ struct ArticleReaderView: View {
                 .id(item.id)
         }
         .onDisappear { tts.stop() }
+        .onChange(of: tts.isPlaying) { _, playing in
+            if playing {
+                displayProgress = 0
+            }
+        }
+        .onChange(of: tts.playbackProgress) { _, progress in
+            guard tts.isPlaying else { return }
+            displayProgress = progress
+        }
+
         .navigationDestination(isPresented: $showComments) {
             ArticleCommentsView(
                 articleTitle: currentArticle.title,
