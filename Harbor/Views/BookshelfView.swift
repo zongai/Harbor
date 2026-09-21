@@ -32,25 +32,30 @@ struct BookshelfView: View {
                 } else {
                     List {
                         ForEach(library.books) { book in
-                            BookRow(book: book)
-                                .listRowInsets(EdgeInsets(
-                                    top: 8,
-                                    leading: AppLayout.listHorizontalPadding,
-                                    bottom: 8,
-                                    trailing: AppLayout.listHorizontalPadding
-                                ))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        library.deleteBook(id: book.id)
-                                    } label: {
-                                        Label("删除", systemImage: "trash")
-                                    }
+                            NavigationLink(value: book.id) {
+                                BookRow(book: book)
+                            }
+                            .listRowInsets(EdgeInsets(
+                                top: 8,
+                                leading: AppLayout.listHorizontalPadding,
+                                bottom: 8,
+                                trailing: AppLayout.listHorizontalPadding
+                            ))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    library.deleteBook(id: book.id)
+                                } label: {
+                                    Label("删除", systemImage: "trash")
                                 }
+                            }
                         }
                     }
                     .listStyle(.plain)
+                    .navigationDestination(for: UUID.self) { id in
+                        BookReaderView(bookID: id)
+                    }
                 }
             }
             .appScreenBackground()
