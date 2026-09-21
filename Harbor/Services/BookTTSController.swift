@@ -292,8 +292,8 @@ final class BookTTSController {
             statusText = "朗读 \(i + 1)/\(queue.count)"
             isLoading = true
 
-            // 启动后续段预取（最多 2 段）
-            for lookAhead in 1...2 {
+            // 启动后续段预取（最多 3 段，压低段间等待）
+            for lookAhead in 1...3 {
                 let next = i + lookAhead
                 guard next < queue.count, prefetchTasks[next] == nil else { continue }
                 let nextSeg = queue[next]
@@ -406,7 +406,7 @@ final class BookTTSController {
         return data
     }
 
-    /// 预缓存当前章节全部段落（Edge）
+    /// 预缓存当前章节全部段落（Edge）— 有限并发，失败不中断整章
     func precacheChapter(
         bookID: UUID,
         chapterID: UUID,
@@ -424,28 +424,52 @@ final class BookTTSController {
         statusText = "缓存语音 0/\(segs.count)"
         cacheTask = Task {
             let my = session
-            for (i, seg) in segs.enumerated() {
-                if Task.isCancelled || my != session { break }
-                do {
-                    _ = try await audioData(
-                        bookID: bookID,
-                        chapterID: chapterID,
-                        segment: seg,
-                        voice: voice,
-                        session: my
-                    )
-                } catch {
-                    if my == session {
-                        errorMessage = error.localizedDescription
+            let total = segs.count
+            let concurrency = Self.ttsCacheConcurrency
+            var completed = 0
+            var firstError: String?
+            await withTaskGroup(of: (Int, String?).self) { group in
+                var next = 0
+                let spawn = min(concurrency, total)
+                func submit(_ index: Int) {
+                    let seg = segs[index]
+                    group.addTask {
+                        do {
+                            _ = try await self.audioData(
+                                bookID: bookID,
+                                chapterID: chapterID,
+                                segment: seg,
+                                voice: voice,
+                                session: my
+                            )
+                            return (index, nil)
+                        } catch {
+                            return (index, error.localizedDescription)
+                        }
                     }
-                    break
                 }
-                cacheProgress = Double(i + 1) / Double(segs.count)
-                statusText = "缓存语音 \(i + 1)/\(segs.count)"
+                while next < spawn {
+                    submit(next); next += 1
+                }
+                for await (_, err) in group {
+                    if Task.isCancelled || my != session { break }
+                    completed += 1
+                    if let err, firstError == nil { firstError = err }
+                    cacheProgress = Double(completed) / Double(total)
+                    statusText = "缓存语音 \(completed)/\(total)"
+                    if next < total {
+                        submit(next); next += 1
+                    }
+                }
             }
             if my == session {
                 isCaching = false
-                statusText = "本章语音已缓存"
+                if let firstError, completed < total {
+                    errorMessage = firstError
+                    statusText = "缓存部分完成 \(completed)/\(total)"
+                } else {
+                    statusText = "本章语音已缓存"
+                }
             }
         }
     }
@@ -478,45 +502,57 @@ final class BookTTSController {
         cacheTask = Task {
             let my = session
             let dir = BookLibrary.bookDirectory(id: book.id)
+            let concurrency = Self.ttsCacheConcurrency
             for (ci, ch) in chapters.enumerated() {
                 if Task.isCancelled || my != session { break }
                 BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: ch.index)
                 let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
                 let segs = Self.segments(fromHTML: html, chapterID: ch.id)
-                // 已整章缓存则跳过
-                let voiceForStatus = voice ?? "auto"
-                let status = Self.chapterCacheStatus(
-                    bookID: book.id,
-                    chapterID: ch.id,
-                    voice: EdgeTTS.preferredVoice(for: segs.first?.text ?? "a", configured: voice),
-                    segmentIDs: segs.map { "\($0.id)-\($0.languageTag)" }
-                )
-                // chapterCacheStatus 用的 voice 路径需与 audioData 一致；已有文件则 audioData 会命中
-                _ = voiceForStatus
-                _ = status
-                for (si, seg) in segs.enumerated() {
-                    if Task.isCancelled || my != session { break }
-                    do {
-                        _ = try await audioData(
-                            bookID: book.id,
-                            chapterID: ch.id,
-                            segment: seg,
-                            voice: voice,
-                            session: my
-                        )
-                    } catch {
-                        if my == session {
-                            errorMessage = error.localizedDescription
-                        }
-                        isCaching = false
-                        return
-                    }
-                    let doneChapters = Double(ci) + Double(si + 1) / Double(max(segs.count, 1))
-                    let frac = doneChapters / Double(max(chapters.count, 1))
+                guard !segs.isEmpty else {
+                    let frac = Double(ci + 1) / Double(max(chapters.count, 1))
                     cacheProgress = frac
-                    let msg = "全书语音 第\(ch.index + 1) 章（\(ci + 1)/\(chapters.count)）"
-                    statusText = msg
-                    onProgress?(frac, msg)
+                    onProgress?(frac, "跳过空章 第\(ch.index + 1)")
+                    continue
+                }
+                // 章内有限并发；单段失败不中止整书
+                var segDone = 0
+                let segTotal = segs.count
+                await withTaskGroup(of: Bool.self) { group in
+                    var next = 0
+                    let spawn = min(concurrency, segTotal)
+                    func submit(_ index: Int) {
+                        let seg = segs[index]
+                        group.addTask {
+                            do {
+                                _ = try await self.audioData(
+                                    bookID: book.id,
+                                    chapterID: ch.id,
+                                    segment: seg,
+                                    voice: voice,
+                                    session: my
+                                )
+                                return true
+                            } catch {
+                                return false
+                            }
+                        }
+                    }
+                    while next < spawn {
+                        submit(next); next += 1
+                    }
+                    for await ok in group {
+                        if Task.isCancelled || my != session { break }
+                        segDone += 1
+                        _ = ok
+                        let frac = (Double(ci) + Double(segDone) / Double(segTotal)) / Double(max(chapters.count, 1))
+                        cacheProgress = frac
+                        let msg = "全书语音 第\(ch.index + 1) 章 \(segDone)/\(segTotal)（\(ci + 1)/\(chapters.count)）"
+                        statusText = msg
+                        onProgress?(frac, msg)
+                        if next < segTotal {
+                            submit(next); next += 1
+                        }
+                    }
                 }
             }
             if my == session {
@@ -529,6 +565,9 @@ final class BookTTSController {
             _ = totalAll
         }
     }
+
+    /// 全书/本章缓存默认并发（Edge 侧过高易 429）
+    private static let ttsCacheConcurrency = 4
 
     static func clearBookCache(bookID: UUID) {
         let dir = rootURL.appendingPathComponent(bookID.uuidString, isDirectory: true)

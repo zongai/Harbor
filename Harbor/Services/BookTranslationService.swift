@@ -114,7 +114,9 @@ enum BookTranslationService {
             .filter { !$0.isEmpty }
     }
 
-    /// 翻译本章：按段调用 AppStore.translateLongText，结果落盘
+    /// 章内翻译：短段批量 API + 长段受控并发（优先吞吐，失败段可单独补）
+    /// - 短段（≤1600）：`translateTexts` 分批（DeepL/MS 真批量，其它引擎有限并发）
+    /// - 长段：`translateLongText`，并发上限 2
     @MainActor
     static func translateChapter(
         bookID: UUID,
@@ -129,19 +131,95 @@ enum BookTranslationService {
             throw TranslationError.apiError("本章没有可翻译的文本")
         }
 
-        var aligned: [BookChapterTranslation.AlignedParagraph] = []
-        aligned.reserveCapacity(paras.count)
+        let total = paras.count
+        var results = Array(repeating: Optional<String>.none, count: total)
+        var doneCount = 0
 
-        for (i, original) in paras.enumerated() {
-            onProgress?(Double(i) / Double(paras.count), "翻译 \(i + 1)/\(paras.count)")
-            // 单段过长仍走 long text chunk
-            let translated: String
-            if original.count > 1600 {
-                translated = try await store.translateLongText(original)
+        func bump(_ label: String) {
+            doneCount += 1
+            onProgress?(Double(doneCount) / Double(total), "\(label) \(doneCount)/\(total)")
+        }
+
+        // 短段索引与长段索引
+        var shortJobs: [(Int, String)] = []
+        var longJobs: [(Int, String)] = []
+        for (i, p) in paras.enumerated() {
+            if p.count > 1600 {
+                longJobs.append((i, p))
             } else {
-                translated = try await store.translateText(original)
+                shortJobs.append((i, p))
             }
-            aligned.append(.init(original: original, translated: translated))
+        }
+
+        // 1) 短段：按 batchSize 切片，每批一次 translateTexts
+        let batchSize = 16
+        var shortOffset = 0
+        while shortOffset < shortJobs.count {
+            if Task.isCancelled { throw CancellationError() }
+            let end = min(shortOffset + batchSize, shortJobs.count)
+            let slice = Array(shortJobs[shortOffset..<end])
+            let texts = slice.map(\.1)
+            onProgress?(
+                Double(doneCount) / Double(total),
+                "批量翻译 \(doneCount + 1)–\(doneCount + texts.count)/\(total)"
+            )
+            let batch = await store.translateTexts(texts)
+            for (j, job) in slice.enumerated() {
+                let t = (j < batch.count ? batch[j] : nil)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if t.isEmpty {
+                    // 批量缺口：单条补
+                    if let one = try? await store.translateText(job.1) {
+                        results[job.0] = one
+                    } else {
+                        results[job.0] = ""
+                    }
+                } else {
+                    results[job.0] = t
+                }
+                bump("翻译")
+            }
+            shortOffset = end
+        }
+
+        // 2) 长段：有限并发
+        let longConcurrency = 2
+        if !longJobs.isEmpty {
+            await withTaskGroup(of: (Int, String).self) { group in
+                var next = 0
+                let spawn = min(longConcurrency, longJobs.count)
+                func submit(_ job: (Int, String)) {
+                    let (idx, text) = job
+                    group.addTask {
+                        let t = (try? await store.translateLongText(text)) ?? ""
+                        return (idx, t)
+                    }
+                }
+                while next < spawn {
+                    submit(longJobs[next]); next += 1
+                }
+                for await (idx, text) in group {
+                    results[idx] = text
+                    bump("长段")
+                    if next < longJobs.count {
+                        submit(longJobs[next]); next += 1
+                    }
+                }
+            }
+        }
+
+        // 仍有空结果再单条补一次
+        for i in results.indices where (results[i] ?? "").isEmpty {
+            if Task.isCancelled { throw CancellationError() }
+            if let t = try? await store.translateText(paras[i]), !t.isEmpty {
+                results[i] = t
+            }
+        }
+
+        var aligned: [BookChapterTranslation.AlignedParagraph] = []
+        aligned.reserveCapacity(total)
+        for i in 0..<total {
+            aligned.append(.init(original: paras[i], translated: results[i] ?? ""))
         }
         onProgress?(1, "翻译完成")
 
