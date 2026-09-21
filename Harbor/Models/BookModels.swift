@@ -14,8 +14,10 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var importDate: Date
     var lastReadDate: Date?
     var lastChapterID: UUID?
-    /// 0...1
+    /// 全书进度 0...1（按章节序号）
     var readingProgress: Double
+    /// 上次退出时，当前章内滚动比例 0...1（0=章首，1=章末）
+    var lastScrollProgress: Double
     var totalChapters: Int
     /// 源 EPUB 内 OPF 路径（相对解压根）
     var opfPath: String?
@@ -35,6 +37,7 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
         lastReadDate: Date? = nil,
         lastChapterID: UUID? = nil,
         readingProgress: Double = 0,
+        lastScrollProgress: Double = 0,
         totalChapters: Int = 0,
         opfPath: String? = nil,
         chapters: [BookChapter] = []
@@ -51,6 +54,7 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
         self.lastReadDate = lastReadDate
         self.lastChapterID = lastChapterID
         self.readingProgress = readingProgress
+        self.lastScrollProgress = min(1, max(0, lastScrollProgress))
         self.totalChapters = totalChapters
         self.opfPath = opfPath
         self.chapters = chapters
@@ -60,6 +64,53 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
         let p = max(0, min(1, readingProgress))
         if p <= 0 { return "未读" }
         return "阅读 \(Int((p * 100).rounded()))%"
+    }
+
+    /// 兼容旧 metadata（无 lastScrollProgress）
+    enum CodingKeys: String, CodingKey {
+        case id, title, subtitle, author, publisher, language, coverFileName
+        case fileSize, importDate, lastReadDate, lastChapterID, readingProgress
+        case lastScrollProgress, totalChapters, opfPath, chapters
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
+        author = try c.decodeIfPresent(String.self, forKey: .author)
+        publisher = try c.decodeIfPresent(String.self, forKey: .publisher)
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+        coverFileName = try c.decodeIfPresent(String.self, forKey: .coverFileName)
+        fileSize = try c.decodeIfPresent(Int64.self, forKey: .fileSize) ?? 0
+        importDate = try c.decodeIfPresent(Date.self, forKey: .importDate) ?? Date()
+        lastReadDate = try c.decodeIfPresent(Date.self, forKey: .lastReadDate)
+        lastChapterID = try c.decodeIfPresent(UUID.self, forKey: .lastChapterID)
+        readingProgress = try c.decodeIfPresent(Double.self, forKey: .readingProgress) ?? 0
+        lastScrollProgress = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .lastScrollProgress) ?? 0))
+        totalChapters = try c.decodeIfPresent(Int.self, forKey: .totalChapters) ?? 0
+        opfPath = try c.decodeIfPresent(String.self, forKey: .opfPath)
+        chapters = try c.decodeIfPresent([BookChapter].self, forKey: .chapters) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(subtitle, forKey: .subtitle)
+        try c.encodeIfPresent(author, forKey: .author)
+        try c.encodeIfPresent(publisher, forKey: .publisher)
+        try c.encodeIfPresent(language, forKey: .language)
+        try c.encodeIfPresent(coverFileName, forKey: .coverFileName)
+        try c.encode(fileSize, forKey: .fileSize)
+        try c.encode(importDate, forKey: .importDate)
+        try c.encodeIfPresent(lastReadDate, forKey: .lastReadDate)
+        try c.encodeIfPresent(lastChapterID, forKey: .lastChapterID)
+        try c.encode(readingProgress, forKey: .readingProgress)
+        try c.encode(lastScrollProgress, forKey: .lastScrollProgress)
+        try c.encode(totalChapters, forKey: .totalChapters)
+        try c.encodeIfPresent(opfPath, forKey: .opfPath)
+        try c.encode(chapters, forKey: .chapters)
     }
 }
 

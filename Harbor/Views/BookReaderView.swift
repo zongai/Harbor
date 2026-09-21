@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// EPUB 阅读器（Phase 3）：章节切换、目录、位置记忆、复用正文选区 / AI 解释
 struct BookReaderView: View {
@@ -7,6 +8,7 @@ struct BookReaderView: View {
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var systemColorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     let bookID: UUID
 
@@ -25,6 +27,13 @@ struct BookReaderView: View {
     @State private var translationProgressText: String?
     /// 左右滑翻章：累计水平位移，避免与垂直滚动冲突
     @State private var chapterSwipeX: CGFloat = 0
+    /// 当前章内滚动比例 0...1
+    @State private var scrollProgress: Double = 0
+    /// 打开后恢复一次滚动位置
+    @State private var pendingScrollRestore: Double?
+    @State private var didRestoreScroll = false
+    @State private var restoreToken = 0
+    @State private var restoreProgress: Double = 0
 
     private var chapters: [BookChapter] {
         book?.chapters.sorted(by: { $0.index < $1.index }) ?? []
@@ -60,6 +69,11 @@ struct BookReaderView: View {
             persistPosition()
             bookTTS.stop()
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background || phase == .inactive {
+                persistPosition()
+            }
+        }
     }
 
     @ViewBuilder
@@ -67,6 +81,7 @@ struct BookReaderView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.md) {
+                Color.clear.frame(height: 0).id("chapter-top")
                 if let ch = currentChapter {
                     Text(ch.title)
                         .font(AppTypography.articleTitle(size: CGFloat(store.readerTitleFontSize)))
@@ -110,10 +125,43 @@ struct BookReaderView: View {
                         contentID: contentViewID
                     )
                 }
+                Color.clear.frame(height: 1).id("chapter-bottom")
             }
             .padding(.horizontal, AppLayout.readingHorizontalPadding)
             .padding(.vertical, AppSpacing.lg)
             .padding(.bottom, 48)
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: BookScrollHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            }
+        }
+        .coordinateSpace(name: "bookReaderScroll")
+        .onScrollGeometryChange(for: Double.self) { geo in
+            let range = max(geo.contentSize.height - geo.containerSize.height, 1)
+            return min(1, max(0, Double(geo.contentOffset.y / range)))
+        } action: { _, newValue in
+            if pendingScrollRestore == nil {
+                scrollProgress = newValue
+            }
+        }
+        .background {
+            BookScrollOffsetRestorer(progress: restoreProgress, token: restoreToken)
+        }
+        .onPreferenceChange(BookScrollHeightKey.self) { _ in
+            tryRestoreScroll(proxy: proxy)
+        }
+        .onChange(of: chapterHTML) { _, _ in
+            // 仅首次打开恢复；换章后不自动恢复旧章进度
+            if pendingScrollRestore != nil {
+                didRestoreScroll = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    tryRestoreScroll(proxy: proxy)
+                }
+            }
         }
         .appScreenBackground()
 
@@ -420,26 +468,50 @@ struct BookReaderView: View {
         bookTTS.playbackRate = ttsRate
 
         guard let b = library.books.first(where: { $0.id == bookID }) else {
-            // 尝试从磁盘 metadata 恢复
             library.load()
             book = library.books.first(where: { $0.id == bookID })
             return
         }
         book = b
+        // 恢复上次章节
         if let lastID = b.lastChapterID,
            let idx = b.chapters.sorted(by: { $0.index < $1.index }).firstIndex(where: { $0.id == lastID }) {
             chapterIndex = idx
         } else {
             chapterIndex = 0
         }
+        // 恢复章内滚动（内容加载后再滚）
+        let savedScroll = min(1, max(0, b.lastScrollProgress))
+        pendingScrollRestore = savedScroll > 0.02 ? savedScroll : nil
+        didRestoreScroll = pendingScrollRestore == nil
+        scrollProgress = savedScroll
         Task { await loadCurrentChapter() }
         touchLastRead()
     }
 
     private func selectChapter(_ idx: Int) {
         guard chapters.indices.contains(idx) else { return }
-        chapterIndex = idx
+        // 换章前保存当前章位置
         persistPosition()
+        chapterIndex = idx
+        scrollProgress = 0
+        pendingScrollRestore = nil
+        didRestoreScroll = true
+        persistPosition()
+    }
+
+    private func tryRestoreScroll(proxy: ScrollViewProxy) {
+        guard !didRestoreScroll, let target = pendingScrollRestore, target > 0.02 else { return }
+        guard !isLoadingChapter, !chapterHTML.isEmpty else { return }
+        didRestoreScroll = true
+        let progress = target
+        pendingScrollRestore = nil
+        // 先滚到顶部再由 UIKit 按比例定位（比 anchor 估算更准）
+        proxy.scrollTo("chapter-top", anchor: .top)
+        scrollProgress = progress
+        // 触发 UIView 查找 UIScrollView 设置 offset
+        restoreToken += 1
+        restoreProgress = progress
     }
 
     private func loadCurrentChapter() async {
@@ -473,14 +545,81 @@ struct BookReaderView: View {
         guard var b = book, let ch = currentChapter else { return }
         b.lastChapterID = ch.id
         b.lastReadDate = Date()
+        b.lastScrollProgress = min(1, max(0, scrollProgress))
         let n = max(b.chapters.count, 1)
-        b.readingProgress = Double(chapterIndex + 1) / Double(n)
-        // 同步章节进度标记
+        // 全书进度：章节进度 + 章内滚动
+        let chapterFrac = Double(chapterIndex) / Double(n)
+        let within = b.lastScrollProgress / Double(n)
+        b.readingProgress = min(1, chapterFrac + within + (1.0 / Double(n)) * 0.01)
         if let i = b.chapters.firstIndex(where: { $0.id == ch.id }) {
-            b.chapters[i].readingProgress = 1
+            b.chapters[i].readingProgress = b.lastScrollProgress
         }
         book = b
         library.updateBook(b)
+    }
+}
+
+/// 用于观测章节内容高度，触发滚动恢复
+private struct BookScrollHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// 在 UIScrollView 上按比例恢复 contentOffset（SwiftUI ScrollView 底层）
+private struct BookScrollOffsetRestorer: UIViewRepresentable {
+    var progress: Double
+    var token: Int
+
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView(frame: .zero)
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard token > 0, progress > 0.02 else { return }
+        let p = progress
+        // 等布局完成再设 offset
+        DispatchQueue.main.async {
+            guard let scroll = Self.findScrollView(from: uiView) else { return }
+            let maxY = max(scroll.contentSize.height - scroll.bounds.height, 0)
+            guard maxY > 1 else {
+                // 内容高度尚未就绪，稍后再试
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    guard let scroll = Self.findScrollView(from: uiView) else { return }
+                    let maxY = max(scroll.contentSize.height - scroll.bounds.height, 0)
+                    scroll.setContentOffset(CGPoint(x: 0, y: maxY * p), animated: false)
+                }
+                return
+            }
+            scroll.setContentOffset(CGPoint(x: 0, y: maxY * p), animated: false)
+        }
+    }
+
+    private static func findScrollView(from view: UIView) -> UIScrollView? {
+        var v: UIView? = view
+        while let cur = v {
+            if let s = cur as? UIScrollView { return s }
+            v = cur.superview
+        }
+        // 向上找不到则向下搜兄弟树
+        var root: UIView? = view
+        while let s = root?.superview { root = s }
+        return findScrollViewDFS(root)
+    }
+
+    private static func findScrollViewDFS(_ root: UIView?) -> UIScrollView? {
+        guard let root else { return nil }
+        if let s = root as? UIScrollView, s.contentSize.height > s.bounds.height + 10 {
+            return s
+        }
+        for child in root.subviews {
+            if let found = findScrollViewDFS(child) { return found }
+        }
+        return nil
     }
 }
 
