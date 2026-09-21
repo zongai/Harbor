@@ -23,6 +23,8 @@ struct BookReaderView: View {
     @State private var chapterTranslation: BookChapterTranslation?
     @State private var isTranslatingChapter = false
     @State private var translationProgressText: String?
+    /// 左右滑翻章：累计水平位移，避免与垂直滚动冲突
+    @State private var chapterSwipeX: CGFloat = 0
 
     private var chapters: [BookChapter] {
         book?.chapters.sorted(by: { $0.index < $1.index }) ?? []
@@ -136,6 +138,27 @@ struct BookReaderView: View {
             .padding(.bottom, 48)
         }
         .appScreenBackground()
+
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 40, coordinateSpace: .local)
+                .onEnded { value in
+                    let dx = value.translation.width
+                    let dy = value.translation.height
+                    // 水平为主才翻章，避免干扰上下滚动
+                    guard abs(dx) > 80, abs(dx) > abs(dy) * 1.4 else { return }
+                    if dx < 0 {
+                        // 左滑 → 下一章
+                        if chapterIndex + 1 < chapters.count {
+                            selectChapter(chapterIndex + 1)
+                        }
+                    } else {
+                        // 右滑 → 上一章
+                        if chapterIndex > 0 {
+                            selectChapter(chapterIndex - 1)
+                        }
+                    }
+                }
+        )
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

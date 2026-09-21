@@ -157,6 +157,53 @@ enum BookTranslationService {
         return payload
     }
 
+
+    /// 全书翻译（按章节，跳过已完成且目标语言相同的缓存）
+    @MainActor
+    static func translateBook(
+        book: Book,
+        targetLanguage: AppLanguage,
+        store: AppStore,
+        onProgress: ((Double, String) -> Void)? = nil
+    ) async throws {
+        let chapters = book.chapters.sorted { $0.index < $1.index }
+        guard !chapters.isEmpty else {
+            throw TranslationError.apiError("没有章节可翻译")
+        }
+        let dir = BookLibrary.bookDirectory(id: book.id)
+        for (i, ch) in chapters.enumerated() {
+            if Task.isCancelled { throw CancellationError() }
+            if let existing = load(bookID: book.id, chapterID: ch.id),
+               existing.status == .done,
+               existing.targetLanguage == targetLanguage.rawValue,
+               !existing.paragraphs.isEmpty {
+                onProgress?(
+                    Double(i + 1) / Double(chapters.count),
+                    "跳过已译 " + String(i + 1) + "/" + String(chapters.count)
+                )
+                continue
+            }
+            let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
+            onProgress?(
+                Double(i) / Double(chapters.count),
+                "翻译第 " + String(i + 1) + "/" + String(chapters.count) + " 章"
+            )
+            _ = try await translateChapter(
+                bookID: book.id,
+                chapterID: ch.id,
+                html: html,
+                targetLanguage: targetLanguage,
+                store: store,
+                onProgress: nil
+            )
+            onProgress?(
+                Double(i + 1) / Double(chapters.count),
+                "完成 " + String(i + 1) + "/" + String(chapters.count) + " 章"
+            )
+        }
+        onProgress?(1, "全书翻译完成")
+    }
+
     static func clearBook(bookID: UUID) {
         let dir = rootURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)

@@ -410,6 +410,62 @@ final class BookTTSController {
         }
     }
 
+
+    /// 全书语音预缓存（按章节顺序，可取消）
+    func precacheBook(
+        book: Book,
+        voice: String?,
+        onProgress: (@MainActor (Double, String) -> Void)? = nil
+    ) {
+        cacheTask?.cancel()
+        let chapters = book.chapters.sorted { $0.index < $1.index }
+        guard !chapters.isEmpty else {
+            errorMessage = "没有章节可缓存"
+            return
+        }
+        isCaching = true
+        cacheProgress = 0
+        statusText = "全书语音…"
+        cacheTask = Task {
+            let my = session
+            let dir = BookLibrary.bookDirectory(id: book.id)
+            for (ci, ch) in chapters.enumerated() {
+                if Task.isCancelled || my != session { break }
+                let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
+                let segs = Self.segments(fromHTML: html, chapterID: ch.id)
+                for (si, seg) in segs.enumerated() {
+                    if Task.isCancelled || my != session { break }
+                    do {
+                        _ = try await audioData(
+                            bookID: book.id,
+                            chapterID: ch.id,
+                            segment: seg,
+                            voice: voice,
+                            session: my
+                        )
+                    } catch {
+                        if my == session {
+                            errorMessage = error.localizedDescription
+                        }
+                        isCaching = false
+                        return
+                    }
+                    let frac = (Double(ci) + Double(si + 1) / Double(max(segs.count, 1))) / Double(chapters.count)
+                    cacheProgress = frac
+                    let msg = "全书语音 第" + String(ci + 1) + "/" + String(chapters.count) + " 章"
+                    statusText = msg
+                    onProgress?(frac, msg)
+                }
+            }
+            if my == session {
+                isCaching = false
+                statusText = "全书语音已缓存"
+                cacheProgress = 1
+                onProgress?(1, "全书语音已缓存")
+            }
+        }
+    }
+
     static func clearBookCache(bookID: UUID) {
         let dir = rootURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)

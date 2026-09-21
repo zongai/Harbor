@@ -10,6 +10,11 @@ struct BookshelfView: View {
     @State private var showImporter = false
     @State private var showAddOPDS = false
     @State private var importError: String?
+    @State private var batchProgressText: String?
+    @State private var batchProgress: Double = 0
+    @State private var isBatchWorking = false
+    @State private var bookBatchTTS = BookTTSController()
+    @Environment(AppStore.self) private var store
 
     private var recentBooks: [Book] {
         library.books
@@ -29,6 +34,20 @@ struct BookshelfView: View {
                                 BookRow(book: book)
                             }
                             .listRowBackground(Color.clear)
+                            .contextMenu {
+                                Button {
+                                    startWholeBookTranslate(book)
+                                } label: {
+                                    Label("全书翻译", systemImage: "character.book.closed")
+                                }
+                                .disabled(isBatchWorking)
+                                Button {
+                                    startWholeBookTTSCache(book)
+                                } label: {
+                                    Label("全书 TTS 缓存", systemImage: "arrow.down.circle")
+                                }
+                                .disabled(isBatchWorking)
+                            }
                         }
                     }
                 }
@@ -45,6 +64,26 @@ struct BookshelfView: View {
                                 BookRow(book: book)
                             }
                             .listRowBackground(Color.clear)
+                            .contextMenu {
+                                Button {
+                                    startWholeBookTranslate(book)
+                                } label: {
+                                    Label("全书翻译", systemImage: "character.book.closed")
+                                }
+                                .disabled(isBatchWorking)
+                                Button {
+                                    startWholeBookTTSCache(book)
+                                } label: {
+                                    Label("全书 TTS 缓存", systemImage: "arrow.down.circle")
+                                }
+                                .disabled(isBatchWorking)
+                                Divider()
+                                Button(role: .destructive) {
+                                    library.deleteBook(id: book.id)
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
                                     library.deleteBook(id: book.id)
@@ -132,6 +171,23 @@ struct BookshelfView: View {
                     ProgressView("正在导入…")
                         .padding()
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                } else if isBatchWorking {
+                    VStack(spacing: 10) {
+                        ProgressView(value: batchProgress)
+                            .frame(width: 180)
+                        Text(batchProgressText ?? "处理中…")
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.muted)
+                            .multilineTextAlignment(.center)
+                        Button("取消") {
+                            bookBatchTTS.stop()
+                            isBatchWorking = false
+                            batchProgressText = nil
+                        }
+                        .font(AppTypography.caption())
+                    }
+                    .padding(16)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
             .sheet(isPresented: $showImporter) {
@@ -169,6 +225,58 @@ struct BookshelfView: View {
         }
     }
 }
+
+    private func startWholeBookTranslate(_ book: Book) {
+        isBatchWorking = true
+        batchProgress = 0
+        batchProgressText = "准备全书翻译…"
+        Task {
+            do {
+                try await BookTranslationService.translateBook(
+                    book: book,
+                    targetLanguage: store.targetLanguage,
+                    store: store
+                ) { p, msg in
+                    Task { @MainActor in
+                        batchProgress = p
+                        batchProgressText = msg
+                    }
+                }
+                batchProgressText = "全书翻译完成"
+            } catch is CancellationError {
+                batchProgressText = "已取消"
+            } catch {
+                importError = error.localizedDescription
+            }
+            isBatchWorking = false
+        }
+    }
+
+    private func startWholeBookTTSCache(_ book: Book) {
+        isBatchWorking = true
+        batchProgress = 0
+        batchProgressText = "准备全书语音缓存…"
+        let voice = store.ttsVoice.isEmpty ? nil : store.ttsVoice
+        bookBatchTTS.precacheBook(book: book, voice: voice) { p, msg in
+            batchProgress = p
+            batchProgressText = msg
+            if p >= 1 {
+                isBatchWorking = false
+            }
+        }
+        // 若立即失败
+        Task {
+            while isBatchWorking && bookBatchTTS.isCaching {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                batchProgress = bookBatchTTS.cacheProgress
+                if let s = bookBatchTTS.statusText { batchProgressText = s }
+            }
+            if bookBatchTTS.errorMessage != nil {
+                importError = bookBatchTTS.errorMessage
+            }
+            isBatchWorking = false
+        }
+    }
 
 private struct BookRow: View {
     @Environment(BookLibrary.self) private var library
