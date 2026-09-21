@@ -109,7 +109,8 @@ enum EPUBParser {
                 bookID: bookID,
                 index: idx,
                 title: stripXML(titleGuess),
-                href: normalizePath(fullHref),
+                // 保留 OPF 原始大小写路径，避免 extracted/OEBPS 与 oebps 不一致
+                href: canonicalizePath(fullHref),
                 language: language
             ))
         }
@@ -160,20 +161,56 @@ enum EPUBParser {
         return ParseResult(book: book, coverData: coverData, extractRootRelative: "")
     }
 
-    /// 按章节 href 从已解压目录读取 HTML
+    /// 按章节 href 从已解压目录读取 HTML；失败时回退从 book.epub 按条目名读取
     static func loadChapterHTML(bookDirectory: URL, href: String) -> String? {
-        let path = bookDirectory.appendingPathComponent("extracted").appendingPathComponent(href)
-        if let data = try? Data(contentsOf: path) {
+        let extracted = bookDirectory.appendingPathComponent("extracted", isDirectory: true)
+        if let data = readFile(in: extracted, relativePath: href) {
             return string(from: data)
         }
-        // try map basename
-        let base = (href as NSString).lastPathComponent
-        let dir = bookDirectory.appendingPathComponent("extracted")
-        if let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) {
-            for case let file as URL in en where file.lastPathComponent == base {
-                if let data = try? Data(contentsOf: file) {
-                    return string(from: data)
-                }
+        // 回退：直接从原始 epub 读取（不依赖解压路径大小写）
+        let epubURL = bookDirectory.appendingPathComponent("book.epub")
+        if FileManager.default.fileExists(atPath: epubURL.path),
+           let data = readFromEPUB(epubURL, entryPath: href) {
+            return string(from: data)
+        }
+        return nil
+    }
+
+    private static func readFile(in root: URL, relativePath: String) -> Data? {
+        let parts = canonicalizePath(relativePath)
+            .split(separator: "/")
+            .map(String.init)
+            .filter { !$0.isEmpty && $0 != "." }
+        var url = root
+        for p in parts {
+            url = url.appendingPathComponent(p, isDirectory: false)
+        }
+        if let data = try? Data(contentsOf: url), !data.isEmpty {
+            return data
+        }
+        // 大小写不敏感：按 basename 全树搜索
+        let base = parts.last?.lowercased() ?? ""
+        guard !base.isEmpty,
+              let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else {
+            return nil
+        }
+        for case let file as URL in en {
+            if file.lastPathComponent.lowercased() == base,
+               let data = try? Data(contentsOf: file), !data.isEmpty {
+                return data
+            }
+        }
+        return nil
+    }
+
+    private static func readFromEPUB(_ epubURL: URL, entryPath: String) -> Data? {
+        guard let entries = try? MinimalZip.entries(from: epubURL) else { return nil }
+        let want = canonicalizePath(entryPath).lowercased()
+        let base = (want as NSString).lastPathComponent
+        for e in entries {
+            let name = canonicalizePath(e.name).lowercased()
+            if name == want || name.hasSuffix("/" + base) || (name as NSString).lastPathComponent == base {
+                if !e.data.isEmpty { return e.data }
             }
         }
         return nil
@@ -181,13 +218,18 @@ enum EPUBParser {
 
     // MARK: - Helpers
 
+    /// 查找用：小写 key
     private static func normalizePath(_ raw: String) -> String {
+        canonicalizePath(raw).lowercased()
+    }
+
+    /// 存储 / 读文件用：保留大小写，统一分隔符
+    private static func canonicalizePath(_ raw: String) -> String {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasPrefix("./") { s = String(s.dropFirst(2)) }
         while s.hasPrefix("/") { s = String(s.dropFirst()) }
-        // decode %20
         s = s.removingPercentEncoding ?? s
-        return s.replacingOccurrences(of: "\\", with: "/").lowercased()
+        return s.replacingOccurrences(of: "\\", with: "/")
     }
 
     private static func join(_ dir: String, _ href: String) -> String {
