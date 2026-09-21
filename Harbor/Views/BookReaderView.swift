@@ -17,6 +17,8 @@ struct BookReaderView: View {
     @State private var loadError: String?
     @State private var showTOC = false
     @State private var showChrome = true
+    @State private var bookTTS = BookTTSController()
+    @State private var ttsRate: Double = 1.0
 
     private var chapters: [BookChapter] {
         book?.chapters.sorted(by: { $0.index < $1.index }) ?? []
@@ -48,7 +50,10 @@ struct BookReaderView: View {
             }
         }
         .onAppear(perform: bootstrap)
-        .onDisappear { persistPosition() }
+        .onDisappear {
+            persistPosition()
+            bookTTS.stop()
+        }
     }
 
     @ViewBuilder
@@ -97,7 +102,58 @@ struct BookReaderView: View {
         .navigationTitle(book.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    ForEach([0.75, 1.0, 1.25, 1.5, 1.75, 2.0], id: \.self) { r in
+                        Button {
+                            ttsRate = r
+                            bookTTS.playbackRate = r
+                        } label: {
+                            HStack {
+                                Text(String(format: "%.2gx", r))
+                                if abs(ttsRate - r) < 0.01 {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button {
+                        guard let ch = currentChapter else { return }
+                        bookTTS.precacheChapter(
+                            bookID: bookID,
+                            chapterID: ch.id,
+                            html: chapterHTML,
+                            voice: store.ttsVoice.isEmpty ? nil : store.ttsVoice
+                        )
+                    } label: {
+                        Label("缓存本章语音", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(chapterHTML.isEmpty || bookTTS.isCaching)
+                } label: {
+                    Label("语速", systemImage: "gauge.with.dots.needle.33percent")
+                }
+                .labelStyle(.iconOnly)
+
+                Button {
+                    guard let ch = currentChapter else { return }
+                    bookTTS.playbackRate = ttsRate
+                    bookTTS.toggleChapter(
+                        bookID: bookID,
+                        chapterID: ch.id,
+                        html: chapterHTML,
+                        voice: store.ttsVoice.isEmpty ? nil : store.ttsVoice,
+                        rate: ttsRate
+                    )
+                } label: {
+                    Label(
+                        bookTTS.isPlaying || bookTTS.isLoading ? "停止" : "朗读",
+                        systemImage: bookTTS.isPlaying || bookTTS.isLoading ? "stop.fill" : "speaker.wave.2"
+                    )
+                }
+                .labelStyle(.iconOnly)
+                .disabled(chapterHTML.isEmpty && !bookTTS.isPlaying)
+
                 Button {
                     showTOC = true
                 } label: {
@@ -169,10 +225,17 @@ struct BookReaderView: View {
             VStack(spacing: 4) {
                 ProgressView(value: chapterProgress)
                     .tint(theme.accent)
-                Text(currentChapter?.title ?? "")
-                    .font(AppTypography.caption())
-                    .foregroundStyle(theme.muted)
-                    .lineLimit(1)
+                if let s = bookTTS.statusText, bookTTS.isPlaying || bookTTS.isLoading || bookTTS.isCaching {
+                    Text(s)
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.accent)
+                        .lineLimit(1)
+                } else {
+                    Text(currentChapter?.title ?? "")
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity)
 
