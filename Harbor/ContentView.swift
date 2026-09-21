@@ -19,9 +19,6 @@ struct ContentView: View {
             Tab("搜索", systemImage: "magnifyingglass") {
                 SearchView()
             }
-            Tab("收藏", systemImage: "star") {
-                FavoritesListView()
-            }
             Tab("对话", systemImage: "bubble.left.and.bubble.right") {
                 AIChatView()
             }

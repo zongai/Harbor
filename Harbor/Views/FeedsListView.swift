@@ -20,13 +20,17 @@ struct FeedsListView: View {
     @State private var confirmDeleteAll = false
     @State private var renameFeedTarget: RSSFeed?
     @State private var renameFeedText = ""
+    /// 订阅 / 收藏 切换（合并原收藏 Tab）
+    @State private var showFavorites = false
 
     private static let allowedImportExtensions: Set<String> = ["opml", "xml", "rss", "atom", "txt"]
 
     var body: some View {
         NavigationStack {
             List {
-                if store.feeds.isEmpty {
+                if showFavorites {
+                    favoritesListContent
+                } else if store.feeds.isEmpty {
                     emptyState
                 } else {
                     let sections = visibleFeedSections
@@ -178,58 +182,80 @@ struct FeedsListView: View {
             .listStyle(.plain)
             .appScreenBackground()
             .environment(\.editMode, $editMode)
-            .navigationTitle("订阅")
+            .navigationTitle(showFavorites ? "收藏" : "订阅")
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(for: RSSFeed.self) { feed in
                 ArticleListView(feed: feed)
             }
+            .navigationDestination(for: Article.self) { article in
+                ArticleReaderView(article: article, browseFavorites: true)
+                    .onAppear { store.markAsRead(article) }
+            }
             .toolbar {
-                // While sorting, surface "Done" as primary chrome
-                if editMode == .active {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("完成", systemImage: "checkmark") {
-                            withAnimation { editMode = .inactive }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showFavorites.toggle()
+                            if showFavorites { editMode = .inactive }
                         }
-                        .labelStyle(.iconOnly)
-                        .accessibilityLabel("完成排序")
+                    } label: {
+                        Label(
+                            showFavorites ? "订阅" : "收藏",
+                            systemImage: showFavorites ? "star.fill" : "star"
+                        )
                     }
-                } else {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("添加订阅", systemImage: "plus") {
-                            showAddFeed = true
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel(showFavorites ? "返回订阅列表" : "查看收藏文章")
+                    .foregroundStyle(showFavorites ? theme.accent : theme.text)
+                }
+                if !showFavorites {
+                    if editMode == .active {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("完成", systemImage: "checkmark") {
+                                withAnimation { editMode = .inactive }
+                            }
+                            .labelStyle(.iconOnly)
+                            .accessibilityLabel("完成排序")
                         }
-                        .labelStyle(.iconOnly)
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            if store.feedSortMode == .manual {
-                                Button {
-                                    withAnimation { editMode = .active }
-                                } label: {
-                                    Label("手动排序", systemImage: "arrow.up.arrow.down")
+                    } else {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("添加订阅", systemImage: "plus") {
+                                showAddFeed = true
+                            }
+                            .labelStyle(.iconOnly)
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Menu {
+                                if store.feedSortMode == .manual {
+                                    Button {
+                                        withAnimation { editMode = .active }
+                                    } label: {
+                                        Label("手动排序", systemImage: "arrow.up.arrow.down")
+                                    }
                                 }
-                            }
-                            Button {
-                                showGroupManager = true
+                                Button {
+                                    showGroupManager = true
+                                } label: {
+                                    Label("管理分组", systemImage: "folder.badge.gearshape")
+                                }
+                                Divider()
+                                Button {
+                                    showOPMLMenu = true
+                                } label: {
+                                    Label("导入 / 导出", systemImage: "square.and.arrow.down.on.square")
+                                }
                             } label: {
-                                Label("管理分组", systemImage: "folder.badge.gearshape")
+                                Label("更多", systemImage: "ellipsis.circle")
                             }
-                            Divider()
-                            Button {
-                                showOPMLMenu = true
-                            } label: {
-                                Label("导入 / 导出", systemImage: "square.and.arrow.down.on.square")
-                            }
-                        } label: {
-                            Label("更多", systemImage: "ellipsis.circle")
+                            .labelStyle(.iconOnly)
+                            .accessibilityLabel("更多操作")
                         }
-                        .labelStyle(.iconOnly)
-                        .accessibilityLabel("更多操作")
                     }
                 }
             }
             // 立即结束系统下拉刷新（避免顶部转圈与下方进度条叠两层），实际进度只走 safeAreaInset 线性条
             .refreshable {
+                guard !showFavorites else { return }
                 guard !store.chrome.isRefreshingAll else { return }
                 Task { await store.refreshAll() }
             }
@@ -492,6 +518,63 @@ struct FeedsListView: View {
     }
 
     
+    private var favoriteArticlesSorted: [Article] {
+        let _ = store.articleFlagsEpoch
+        return store.favoriteArticles
+            .sorted { ($0.publishedDate ?? .distantPast) > ($1.publishedDate ?? .distantPast) }
+    }
+
+    @ViewBuilder
+    private var favoritesListContent: some View {
+        let articles = favoriteArticlesSorted
+        if articles.isEmpty {
+            ContentUnavailableView {
+                Label {
+                    Text("暂无收藏")
+                        .font(AppTypography.section())
+                } icon: {
+                    Image(systemName: "star")
+                        .foregroundStyle(theme.muted)
+                }
+            } description: {
+                Text("在文章列表左滑收藏，或在阅读页点星号。收藏不会被自动清理。")
+                    .font(AppTypography.body())
+                    .foregroundStyle(theme.muted)
+            }
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowInsets(.init(top: 80, leading: AppLayout.listHorizontalPadding, bottom: 40, trailing: AppLayout.listHorizontalPadding))
+        } else {
+            ForEach(articles) { article in
+                let showTranslation = article.hasTranslatedBody
+                    || (article.translatedTitle?.isEmpty == false)
+                    || (article.translatedSummary?.isEmpty == false)
+                NavigationLink(value: article) {
+                    ArticleRow(
+                        article: article,
+                        showTranslation: showTranslation,
+                        preferUnreadStyle: true
+                    )
+                }
+                .listRowInsets(EdgeInsets(
+                    top: 0,
+                    leading: AppLayout.listHorizontalPadding,
+                    bottom: 0,
+                    trailing: AppLayout.listHorizontalPadding
+                ))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        store.toggleFavorite(article)
+                    } label: {
+                        Label("取消收藏", systemImage: "star.slash")
+                    }
+                }
+            }
+        }
+    }
+
     /// 源列表展示用：走 AppStore 稳定 section 快照（仅 feeds/sort/未读等关键字段变化时重建）
     private var visibleFeedSections: [(sectionID: String, group: FeedGroup?, feeds: [RSSFeed])] {
         store.visibleFeedSectionsSnapshot()
