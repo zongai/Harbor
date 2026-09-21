@@ -16,7 +16,14 @@ struct BookReaderView: View {
     @State private var chapterIndex: Int = 0
     @State private var chapterHTML: String = ""
     @State private var isLoadingChapter = false
+    /// 换章时若已有缓存则不闪 Progress，仅在无缓存时轻提示
+    @State private var showChapterLoadingHint = false
     @State private var loadError: String?
+    /// 章节 HTML 内存缓存（换章 / 预取）
+    @State private var chapterHTMLCache: [UUID: String] = [:]
+    /// 忽略过期的异步加载结果
+    @State private var chapterLoadGeneration = 0
+    @State private var scrollToTopToken = 0
     @State private var showTOC = false
     @State private var showChrome = true
     @State private var bookTTS = BookTTSController()
@@ -97,20 +104,31 @@ struct BookReaderView: View {
                         .foregroundStyle(theme.muted)
                 }
 
-                if isLoadingChapter {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 40)
-                } else if let loadError {
+                if let loadError {
                     Text(loadError)
                         .font(AppTypography.body())
                         .foregroundStyle(.red)
                 } else if displayHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(emptyContentHint)
-                        .font(AppTypography.body())
-                        .foregroundStyle(theme.muted)
-                        .padding(.vertical, 24)
+                    if isLoadingChapter || showChapterLoadingHint {
+                        ProgressView("加载章节…")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
+                    } else {
+                        Text(emptyContentHint)
+                            .font(AppTypography.body())
+                            .foregroundStyle(theme.muted)
+                            .padding(.vertical, 24)
+                    }
                 } else {
+                    if showChapterLoadingHint {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("加载章节…")
+                                .font(AppTypography.caption())
+                                .foregroundStyle(theme.muted)
+                        }
+                        .padding(.vertical, 4)
+                    }
                     if isTranslatingChapter {
                         HStack(spacing: 8) {
                             ProgressView()
@@ -128,6 +146,7 @@ struct BookReaderView: View {
                         articleTitle: currentChapter?.title ?? "",
                         contentID: contentViewID
                     )
+                    .transaction { $0.animation = nil }
                 }
                 Color.clear.frame(height: 1).id("chapter-bottom")
             }
@@ -159,12 +178,18 @@ struct BookReaderView: View {
             tryRestoreScroll(proxy: proxy)
         }
         .onChange(of: chapterHTML) { _, _ in
-            // 仅首次打开恢复；换章后不自动恢复旧章进度
             if pendingScrollRestore != nil {
                 didRestoreScroll = false
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     tryRestoreScroll(proxy: proxy)
                 }
+            }
+        }
+        .onChange(of: scrollToTopToken) { _, _ in
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                proxy.scrollTo("chapter-top", anchor: .top)
             }
         }
         .appScreenBackground()
@@ -533,14 +558,16 @@ struct BookReaderView: View {
     }
 
     private func selectChapter(_ idx: Int) {
-        guard chapters.indices.contains(idx) else { return }
+        guard chapters.indices.contains(idx), idx != chapterIndex else { return }
         // 换章前保存当前章位置
         persistPosition()
         chapterIndex = idx
         scrollProgress = 0
         pendingScrollRestore = nil
         didRestoreScroll = true
-        persistPosition()
+        // 立即滚回章首，避免沿用上一章滚动位置
+        scrollToTopToken &+= 1
+        // load 由 onChange(chapterIndex) 触发
     }
 
     private func tryRestoreScroll(proxy: ScrollViewProxy) {
@@ -560,20 +587,99 @@ struct BookReaderView: View {
     private func loadCurrentChapter() async {
         guard let book, let ch = currentChapter else {
             chapterHTML = ""
+            cachedHTMLOriginal = ""
             return
         }
-        isLoadingChapter = true
         loadError = nil
-        let html = library.chapterHTML(book: book, chapter: ch)
-        await MainActor.run {
-            if let html, !html.isEmpty {
-                chapterHTML = html
-            } else {
-                chapterHTML = ""
-                loadError = "无法加载本章内容（\(ch.href)）"
-            }
+        chapterLoadGeneration &+= 1
+        let gen = chapterLoadGeneration
+        let chapterID = ch.id
+        let href = ch.href
+        let bookDir = BookLibrary.bookDirectory(id: book.id)
+
+        // 1) 内存命中：瞬间切换，无闪白
+        if let cached = chapterHTMLCache[chapterID], !cached.isEmpty {
+            applyChapterHTML(cached, chapterID: chapterID, generation: gen)
+            prefetchAdjacentChapters(around: chapterIndex, book: book)
+            return
+        }
+
+        // 2) 无缓存：后台读盘，主线程不卡；有旧正文时不整页 Progress
+        let hadContent = !chapterHTML.isEmpty
+        isLoadingChapter = !hadContent
+        showChapterLoadingHint = hadContent
+        let loaded: String? = await Task.detached(priority: .userInitiated) {
+            EPUBParser.loadChapterHTML(bookDirectory: bookDir, href: href)
+        }.value
+
+        guard gen == chapterLoadGeneration else { return }
+        if let loaded, !loaded.isEmpty {
+            chapterHTMLCache[chapterID] = loaded
+            applyChapterHTML(loaded, chapterID: chapterID, generation: gen)
+            prefetchAdjacentChapters(around: chapterIndex, book: book)
+        } else {
+            chapterHTML = ""
+            cachedHTMLOriginal = ""
+            cachedHTMLTranslation = ""
+            cachedHTMLBilingual = ""
+            loadError = "无法加载本章内容（\(href)）"
             isLoadingChapter = false
+            showChapterLoadingHint = false
+        }
+    }
+
+    private func applyChapterHTML(_ html: String, chapterID: UUID, generation: Int) {
+        guard generation == chapterLoadGeneration else { return }
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            chapterHTML = html
+            isLoadingChapter = false
+            showChapterLoadingHint = false
             loadTranslationIfNeeded()
+        }
+        // 限制缓存规模，避免大书占内存
+        if chapterHTMLCache.count > 24 {
+            let keep = Set(adjacentChapterIDs(around: chapterIndex) + [chapterID])
+            chapterHTMLCache = chapterHTMLCache.filter { keep.contains($0.key) }
+        }
+    }
+
+    private func adjacentChapterIDs(around index: Int) -> [UUID] {
+        var ids: [UUID] = []
+        let list = chapters
+        for i in [index - 1, index, index + 1] where list.indices.contains(i) {
+            ids.append(list[i].id)
+        }
+        return ids
+    }
+
+    /// 预取上一章 / 下一章 HTML，使连续翻章接近即时
+    private func prefetchAdjacentChapters(around index: Int, book: Book) {
+        let list = chapters
+        let dir = BookLibrary.bookDirectory(id: book.id)
+        let targets = [index - 1, index + 1].compactMap { i -> BookChapter? in
+            guard list.indices.contains(i) else { return nil }
+            let ch = list[i]
+            if chapterHTMLCache[ch.id] != nil { return nil }
+            return ch
+        }
+        guard !targets.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            var loaded: [(UUID, String)] = []
+            for ch in targets {
+                if let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href), !html.isEmpty {
+                    loaded.append((ch.id, html))
+                }
+            }
+            guard !loaded.isEmpty else { return }
+            await MainActor.run {
+                for (id, html) in loaded {
+                    if chapterHTMLCache[id] == nil {
+                        chapterHTMLCache[id] = html
+                    }
+                }
+            }
         }
     }
 
