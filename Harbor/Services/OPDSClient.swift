@@ -101,7 +101,7 @@ enum OPDSError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .badURL: return "OPDS 地址无效"
+        case .badURL: return "OPDS 地址无效。请使用完整 URL（可省略 https://，例如 opds.example.com/catalog）"
         case .unauthorized: return "认证失败，请检查用户名和密码"
         case .http(let c): return "OPDS 服务器错误 HTTP \(c)"
         case .parse(let s): return "OPDS 解析失败：\(s)"
@@ -128,7 +128,7 @@ enum OPDSClient {
         username: String? = nil,
         password: String? = nil
     ) async throws -> OPDSFeed {
-        guard let url = NetworkURLPolicy.validate(urlString) else { throw OPDSError.badURL }
+        guard let url = NetworkURLPolicy.validateOPDS(urlString) else { throw OPDSError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.setValue(
             "application/atom+xml;profile=opds-catalog, application/atom+xml, application/xml, text/xml, */*;q=0.8",
@@ -167,7 +167,7 @@ enum OPDSClient {
         progress: (@Sendable (Double) -> Void)? = nil,
         isCancelled: (() -> Bool)? = nil
     ) async throws -> URL {
-        guard let url = NetworkURLPolicy.validate(urlString) else { throw OPDSError.badURL }
+        guard let url = NetworkURLPolicy.validateOPDS(urlString) else { throw OPDSError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.setValue("application/epub+zip, application/octet-stream, */*;q=0.5", forHTTPHeaderField: "Accept")
         applyBasicAuth(to: &req, username: username, password: password)

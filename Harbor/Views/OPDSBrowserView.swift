@@ -260,14 +260,17 @@ struct AddOPDSCatalogView: View {
                 password: user.isEmpty ? nil : pass
             )
             let name = title.isEmpty ? feed.title : title
-            catalogs.add(
+            if let err = catalogs.add(
                 title: name,
                 url: u,
                 username: user.isEmpty ? nil : user,
                 password: user.isEmpty ? nil : pass
-            )
-            testMessage = "已添加：\(feed.title)（\(feed.entries.count) 条）"
-            dismiss()
+            ) {
+                testMessage = err
+            } else {
+                testMessage = "已添加：\(feed.title)（\(feed.entries.count) 条）"
+                dismiss()
+            }
         } catch {
             testMessage = error.localizedDescription
         }

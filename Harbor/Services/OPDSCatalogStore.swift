@@ -32,20 +32,26 @@ final class OPDSCatalogStore {
         }
     }
 
-    func add(title: String, url: String, username: String? = nil, password: String? = nil) {
-        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard NetworkURLPolicy.validate(trimmed) != nil else { return }
-        if catalogs.contains(where: { $0.url == trimmed }) { return }
+    @discardableResult
+    func add(title: String, url: String, username: String? = nil, password: String? = nil) -> String? {
+        guard let normalized = NetworkURLPolicy.validateOPDS(url) else {
+            return "OPDS 地址无效。请填写可访问的 http(s) 地址（可省略 https://）"
+        }
+        let trimmed = normalized.absoluteString
+        if catalogs.contains(where: { $0.url == trimmed }) {
+            return "该书库已添加"
+        }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
         let catalog = OPDSCatalog(
-            title: name.isEmpty ? (URL(string: trimmed)?.host ?? "OPDS") : name,
+            title: name.isEmpty ? (normalized.host ?? "OPDS") : name,
             url: trimmed,
             username: (user?.isEmpty == false) ? user : nil
         )
         OPDSCredentialStore.savePassword(password, catalogID: catalog.id)
         catalogs.insert(catalog, at: 0)
         save()
+        return nil
     }
 
     func updateCredentials(id: UUID, username: String?, password: String?) {

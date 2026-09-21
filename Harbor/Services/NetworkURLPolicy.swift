@@ -29,6 +29,71 @@ enum NetworkURLPolicy {
         return url
     }
 
+    // MARK: - OPDS（用户主动输入，规则更宽松）
+
+    /// 规范化用户输入并校验：自动补全 https、允许局域网，拒绝空主机
+    static func validateOPDS(_ urlString: String) -> URL? {
+        guard let url = normalizeUserEnteredURL(urlString) else { return nil }
+        return isAllowedOPDS(url) ? url : nil
+    }
+
+    static func normalizeUserEnteredURL(_ raw: String) -> URL? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 不可见字符 / BOM / 不间断空格
+        let junk: [String] = [
+            "\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}", "\u{00A0}"
+        ]
+        for j in junk {
+            s = s.replacingOccurrences(of: j, with: j == "\u{00A0}" ? " " : "")
+        }
+        // 去掉包裹引号
+        while s.count >= 2 {
+            let pairs: [(Character, Character)] = [
+                ("\"", "\""), ("'", "'"), ("“", "”"), ("‘", "’")
+            ]
+            var stripped = false
+            for (a, b) in pairs {
+                if s.first == a, s.last == b {
+                    s = String(s.dropFirst().dropLast())
+                    stripped = true
+                    break
+                }
+            }
+            if !stripped { break }
+            s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !s.isEmpty else { return nil }
+
+        let lower = s.lowercased()
+        if !lower.hasPrefix("http://"), !lower.hasPrefix("https://") {
+            s = "https://" + s
+        }
+
+        if let components = URLComponents(string: s), let url = components.url,
+           url.host?.isEmpty == false {
+            return url
+        }
+        // 空格 → %20 再试
+        let spaced = s.replacingOccurrences(of: " ", with: "%20")
+        if let components = URLComponents(string: spaced), let url = components.url,
+           url.host?.isEmpty == false {
+            return url
+        }
+        return nil
+    }
+
+    /// OPDS 允许私有网段（Calibre / 家庭服务器）；仍要求 http(s) + 非空 host
+    static func isAllowedOPDS(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return false
+        }
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if host == "0.0.0.0" { return false }
+        return true
+    }
+
+    // MARK: - Private
+
     private static func ipv4Parts(_ host: String) -> [UInt8]? {
         let parts = host.split(separator: ".")
         guard parts.count == 4 else { return nil }
