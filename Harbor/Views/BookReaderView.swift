@@ -245,7 +245,7 @@ struct BookReaderView: View {
         .sheet(isPresented: $showTOC) {
             NavigationStack {
                 List {
-            ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.element.id) { idx, seg in
+                    ForEach(Array(chapters.enumerated()), id: \.element.id) { idx, ch in
                         Button {
                             selectChapter(idx)
                             showTOC = false
@@ -256,7 +256,7 @@ struct BookReaderView: View {
                                         .font(AppTypography.listTitle())
                                         .foregroundStyle(theme.text)
                                         .multilineTextAlignment(.leading)
-                                    Text("第 \(idx + 1) 章")
+                                    Text("第 " + String(idx + 1) + " 章")
                                         .font(AppTypography.caption())
                                         .foregroundStyle(theme.muted)
                                 }
@@ -484,7 +484,6 @@ struct BookReaderView: View {
     }
 }
 
-
 /// 拆出正文区域，降低 BookReaderView body 类型检查负担
 private struct BookReaderBodyContent: View {
     @Bindable var bookTTS: BookTTSController
@@ -496,42 +495,33 @@ private struct BookReaderBodyContent: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        if bookTTS.isPlaying || bookTTS.isLoading, !bookTTS.activeSegments.isEmpty {
-            ttsFollowList
-        } else {
-            ArticleContentView(
-                html: displayHTML,
-                fontSize: fontSize,
-                prefersChineseTypography: prefersChinese,
-                articleTitle: articleTitle
-            )
-            .id(contentID)
-        }
-    }
-
-    private var ttsFollowList: some View {
-        let segments = bookTTS.activeSegments
-        let current = bookTTS.segmentIndex
-        return VStack(alignment: .leading, spacing: AppSpacing.md) {
-            ForEach(0..<segments.count, id: \.self) { idx in
-                let seg = segments[idx]
-                Text(seg.text)
-                    .font(AppTypography.body(size: fontSize))
-                    .foregroundStyle(theme.text)
-                    .lineSpacing(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(idx == current ? theme.accent.opacity(0.18) : Color.clear)
-                    )
-                    .id(ttsSegID(idx))
+        Group {
+            if bookTTS.isPlaying || bookTTS.isLoading, !bookTTS.activeSegments.isEmpty {
+                VStack(alignment: .leading, spacing: AppSpacing.md) {
+                    ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.element.id) { idx, seg in
+                        Text(seg.text)
+                            .font(AppTypography.body(size: fontSize))
+                            .foregroundStyle(theme.text)
+                            .lineSpacing(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(idx == bookTTS.segmentIndex ? theme.accent.opacity(0.18) : Color.clear)
+                            )
+                            .id("tts-seg-" + String(idx))
+                    }
+                }
+            } else {
+                ArticleContentView(
+                    html: displayHTML,
+                    fontSize: fontSize,
+                    prefersChineseTypography: prefersChinese,
+                    articleTitle: articleTitle
+                )
+                .id(contentID)
             }
         }
-    }
-
-    private func ttsSegID(_ idx: Int) -> String {
-        "tts-seg-" + String(idx)
     }
 }
