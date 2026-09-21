@@ -486,7 +486,7 @@ struct BookReaderView: View {
 
 /// 拆出正文区域，降低 BookReaderView body 类型检查负担
 private struct BookReaderBodyContent: View {
-    @Bindable var bookTTS: BookTTSController
+    var bookTTS: BookTTSController
     let displayHTML: String
     let fontSize: Double
     let prefersChinese: Bool
@@ -495,33 +495,53 @@ private struct BookReaderBodyContent: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        Group {
-            if bookTTS.isPlaying || bookTTS.isLoading, !bookTTS.activeSegments.isEmpty {
-                VStack(alignment: .leading, spacing: AppSpacing.md) {
-                    ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.element.id) { idx, seg in
-                        Text(seg.text)
-                            .font(AppTypography.body(size: fontSize))
-                            .foregroundStyle(theme.text)
-                            .lineSpacing(6)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(idx == bookTTS.segmentIndex ? theme.accent.opacity(0.18) : Color.clear)
-                            )
-                            .id("tts-seg-" + String(idx))
-                    }
-                }
-            } else {
-                ArticleContentView(
-                    html: displayHTML,
+        if (bookTTS.isPlaying || bookTTS.isLoading) && !bookTTS.activeSegments.isEmpty {
+            ttsList
+        } else {
+            ArticleContentView(
+                html: displayHTML,
+                fontSize: fontSize,
+                prefersChineseTypography: prefersChinese,
+                articleTitle: articleTitle
+            )
+            .id(contentID)
+        }
+    }
+
+    @ViewBuilder
+    private var ttsList: some View {
+        VStack(alignment: .leading, spacing: AppSpacing.md) {
+            ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.offset) { item in
+                TTSSegLine(
+                    text: item.element.text,
+                    highlighted: item.offset == bookTTS.segmentIndex,
                     fontSize: fontSize,
-                    prefersChineseTypography: prefersChinese,
-                    articleTitle: articleTitle
+                    index: item.offset
                 )
-                .id(contentID)
             }
         }
+    }
+}
+
+private struct TTSSegLine: View {
+    let text: String
+    let highlighted: Bool
+    let fontSize: Double
+    let index: Int
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Text(text)
+            .font(AppTypography.body(size: fontSize))
+            .foregroundStyle(theme.text)
+            .lineSpacing(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(highlighted ? theme.accent.opacity(0.18) : Color.clear)
+            )
+            .id("tts-seg-" + String(index))
     }
 }
