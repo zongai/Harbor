@@ -211,7 +211,7 @@ struct AddOPDSCatalogView: View {
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
             } footer: {
-                Text("示例：公开或私有 OPDS 书库的 Atom 目录地址。")
+                Text("支持 http:// 与 https://。示例：http://192.168.1.10:8080/opds 或 https://example.com/opds")
             }
             Section {
                 TextField("用户名（可选）", text: $username)

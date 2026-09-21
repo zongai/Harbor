@@ -35,7 +35,7 @@ final class OPDSCatalogStore {
     @discardableResult
     func add(title: String, url: String, username: String? = nil, password: String? = nil) -> String? {
         guard let normalized = NetworkURLPolicy.validateOPDS(url) else {
-            return "OPDS 地址无效。请填写可访问的 http(s) 地址（可省略 https://）"
+            return "OPDS 地址无效。请使用 http:// 或 https:// 地址（明文 HTTP 已允许）"
         }
         let trimmed = normalized.absoluteString
         if catalogs.contains(where: { $0.url == trimmed }) {

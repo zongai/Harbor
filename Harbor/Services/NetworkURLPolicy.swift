@@ -65,8 +65,19 @@ enum NetworkURLPolicy {
         guard !s.isEmpty else { return nil }
 
         let lower = s.lowercased()
+        // 已写明 http:// 或 https:// 时原样保留（明确允许明文 HTTP）
         if !lower.hasPrefix("http://"), !lower.hasPrefix("https://") {
-            s = "https://" + s
+            // 无 scheme：局域网 / localhost 默认 http，其余默认 https
+            let hostPart = s.split(separator: "/", maxSplits: 1).first.map(String.init) ?? s
+            let hostOnly = hostPart.split(separator: ":").first.map(String.init)?.lowercased() ?? ""
+            if hostOnly == "localhost"
+                || hostOnly.hasSuffix(".local")
+                || hostOnly.hasSuffix(".lan")
+                || looksLikePrivateIPv4Host(hostOnly) {
+                s = "http://" + s
+            } else {
+                s = "https://" + s
+            }
         }
 
         if let components = URLComponents(string: s), let url = components.url,
@@ -93,6 +104,13 @@ enum NetworkURLPolicy {
     }
 
     // MARK: - Private
+
+    private static func looksLikePrivateIPv4Host(_ host: String) -> Bool {
+        if let parts = ipv4Parts(host) {
+            return isPrivateIPv4(parts)
+        }
+        return false
+    }
 
     private static func ipv4Parts(_ host: String) -> [UInt8]? {
         let parts = host.split(separator: ".")
