@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 struct BookshelfView: View {
     @Environment(BookLibrary.self) private var library
     @Environment(OPDSCatalogStore.self) private var opdsCatalogs
+    @Environment(AppStore.self) private var store
     @Environment(\.theme) private var theme
+
     @State private var showImporter = false
     @State private var showAddOPDS = false
     @State private var importError: String?
@@ -14,7 +16,6 @@ struct BookshelfView: View {
     @State private var batchProgress: Double = 0
     @State private var isBatchWorking = false
     @State private var bookBatchTTS = BookTTSController()
-    @Environment(AppStore.self) private var store
 
     private var recentBooks: [Book] {
         library.books
@@ -34,20 +35,7 @@ struct BookshelfView: View {
                                 BookRow(book: book)
                             }
                             .listRowBackground(Color.clear)
-                            .contextMenu {
-                                Button {
-                                    startWholeBookTranslate(book)
-                                } label: {
-                                    Label("全书翻译", systemImage: "character.book.closed")
-                                }
-                                .disabled(isBatchWorking)
-                                Button {
-                                    startWholeBookTTSCache(book)
-                                } label: {
-                                    Label("全书 TTS 缓存", systemImage: "arrow.down.circle")
-                                }
-                                .disabled(isBatchWorking)
-                            }
+                            .contextMenu { bookContextMenu(book) }
                         }
                     }
                 }
@@ -64,26 +52,7 @@ struct BookshelfView: View {
                                 BookRow(book: book)
                             }
                             .listRowBackground(Color.clear)
-                            .contextMenu {
-                                Button {
-                                    startWholeBookTranslate(book)
-                                } label: {
-                                    Label("全书翻译", systemImage: "character.book.closed")
-                                }
-                                .disabled(isBatchWorking)
-                                Button {
-                                    startWholeBookTTSCache(book)
-                                } label: {
-                                    Label("全书 TTS 缓存", systemImage: "arrow.down.circle")
-                                }
-                                .disabled(isBatchWorking)
-                                Divider()
-                                Button(role: .destructive) {
-                                    library.deleteBook(id: book.id)
-                                } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                            }
+                            .contextMenu { bookContextMenu(book) }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
                                     library.deleteBook(id: book.id)
@@ -224,7 +193,28 @@ struct BookshelfView: View {
             }
         }
     }
-}
+
+    @ViewBuilder
+    private func bookContextMenu(_ book: Book) -> some View {
+        Button {
+            startWholeBookTranslate(book)
+        } label: {
+            Label("全书翻译", systemImage: "character.book.closed")
+        }
+        .disabled(isBatchWorking)
+        Button {
+            startWholeBookTTSCache(book)
+        } label: {
+            Label("全书 TTS 缓存", systemImage: "arrow.down.circle")
+        }
+        .disabled(isBatchWorking)
+        Divider()
+        Button(role: .destructive) {
+            library.deleteBook(id: book.id)
+        } label: {
+            Label("删除", systemImage: "trash")
+        }
+    }
 
     private func startWholeBookTranslate(_ book: Book) {
         isBatchWorking = true
@@ -264,19 +254,19 @@ struct BookshelfView: View {
                 isBatchWorking = false
             }
         }
-        // 若立即失败
         Task {
             while isBatchWorking && bookBatchTTS.isCaching {
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 batchProgress = bookBatchTTS.cacheProgress
                 if let s = bookBatchTTS.statusText { batchProgressText = s }
             }
-            if bookBatchTTS.errorMessage != nil {
-                importError = bookBatchTTS.errorMessage
+            if let err = bookBatchTTS.errorMessage {
+                importError = err
             }
             isBatchWorking = false
         }
     }
+}
 
 private struct BookRow: View {
     @Environment(BookLibrary.self) private var library
@@ -284,7 +274,7 @@ private struct BookRow: View {
     let book: Book
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(spacing: 12) {
             cover
             VStack(alignment: .leading, spacing: 4) {
                 Text(book.title)
@@ -297,9 +287,7 @@ private struct BookRow: View {
                         .foregroundStyle(theme.muted)
                         .lineLimit(1)
                 }
-                HStack(spacing: 8) {
-                    Text(book.progressPercentText)
-                    Text("·")
+                HStack(spacing: 4) {
                     Text("\(book.totalChapters) 章")
                     if let lang = book.language, !lang.isEmpty {
                         Text("·")
@@ -335,7 +323,6 @@ private struct BookRow: View {
     }
 }
 
-
 /// 使用 UIDocumentPicker，类型放宽到 item/data/zip/epub，避免 .epub 在文件 App 中不可选
 struct EPUBDocumentPicker: UIViewControllerRepresentable {
     var onPick: (URL?) -> Void
@@ -348,7 +335,6 @@ struct EPUBDocumentPicker: UIViewControllerRepresentable {
         if let zip = UTType(filenameExtension: "zip") {
             types.insert(zip, at: 0)
         }
-        // IDPF / EPUB 常用 UTI
         if let idpf = UTType("org.idpf.epub-container") {
             types.insert(idpf, at: 0)
         }

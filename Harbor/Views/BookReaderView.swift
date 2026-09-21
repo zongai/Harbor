@@ -101,36 +101,14 @@ struct BookReaderView: View {
                         }
                         .padding(.vertical, 8)
                     }
-                    if bookTTS.isPlaying || bookTTS.isLoading, !bookTTS.activeSegments.isEmpty {
-                        // TTS 进行中：分段展示并跟随当前段
-                        VStack(alignment: .leading, spacing: AppSpacing.md) {
-                            ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.element.id) { idx, seg in
-                                Text(seg.text)
-                                    .font(AppTypography.body(size: store.fontSize))
-                                    .foregroundStyle(theme.text)
-                                    .lineSpacing(6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 6)
-                                    .padding(.horizontal, 8)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(idx == bookTTS.segmentIndex
-                                                  ? theme.accent.opacity(0.18)
-                                                  : Color.clear)
-                                    )
-                                    .id("tts-seg-\(idx)")
-                            }
-                        }
-                    } else {
-                        // 复用 RSS 正文组件：选区 + AI 解释
-                        ArticleContentView(
-                            html: displayHTML,
-                            fontSize: store.fontSize,
-                            prefersChineseTypography: prefersChineseForDisplay(book),
-                            articleTitle: currentChapter?.title ?? ""
-                        )
-                        .id("\(readingMode.rawValue)-\(currentChapter?.id.uuidString ?? "")-\(chapterTranslation?.updatedAt.timeIntervalSince1970 ?? 0)")
-                    }
+                    BookReaderBodyContent(
+                        bookTTS: bookTTS,
+                        displayHTML: displayHTML,
+                        fontSize: store.fontSize,
+                        prefersChinese: prefersChineseForDisplay(book),
+                        articleTitle: currentChapter?.title ?? "",
+                        contentID: contentViewID
+                    )
                 }
             }
             .padding(.horizontal, AppLayout.readingHorizontalPadding)
@@ -267,7 +245,7 @@ struct BookReaderView: View {
         .sheet(isPresented: $showTOC) {
             NavigationStack {
                 List {
-                    ForEach(Array(chapters.enumerated()), id: \.element.id) { idx, ch in
+            ForEach(Array(bookTTS.activeSegments.enumerated()), id: \.element.id) { idx, seg in
                         Button {
                             selectChapter(idx)
                             showTOC = false
@@ -356,7 +334,15 @@ struct BookReaderView: View {
     }
 
 
+    private var contentViewID: String {
+        let mode = readingMode.rawValue
+        let ch = currentChapter?.id.uuidString ?? ""
+        let ts = chapterTranslation?.updatedAt.timeIntervalSince1970 ?? 0
+        return "\(mode)-\(ch)-\(ts)"
+    }
+
     private var displayHTML: String {
+
         switch readingMode {
         case .original:
             return chapterHTML
@@ -495,5 +481,57 @@ struct BookReaderView: View {
         }
         book = b
         library.updateBook(b)
+    }
+}
+
+
+/// 拆出正文区域，降低 BookReaderView body 类型检查负担
+private struct BookReaderBodyContent: View {
+    @Bindable var bookTTS: BookTTSController
+    let displayHTML: String
+    let fontSize: Double
+    let prefersChinese: Bool
+    let articleTitle: String
+    let contentID: String
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        if bookTTS.isPlaying || bookTTS.isLoading, !bookTTS.activeSegments.isEmpty {
+            ttsFollowList
+        } else {
+            ArticleContentView(
+                html: displayHTML,
+                fontSize: fontSize,
+                prefersChineseTypography: prefersChinese,
+                articleTitle: articleTitle
+            )
+            .id(contentID)
+        }
+    }
+
+    private var ttsFollowList: some View {
+        let segments = bookTTS.activeSegments
+        let current = bookTTS.segmentIndex
+        return VStack(alignment: .leading, spacing: AppSpacing.md) {
+            ForEach(0..<segments.count, id: \.self) { idx in
+                let seg = segments[idx]
+                Text(seg.text)
+                    .font(AppTypography.body(size: fontSize))
+                    .foregroundStyle(theme.text)
+                    .lineSpacing(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(idx == current ? theme.accent.opacity(0.18) : Color.clear)
+                    )
+                    .id(ttsSegID(idx))
+            }
+        }
+    }
+
+    private func ttsSegID(_ idx: Int) -> String {
+        "tts-seg-" + String(idx)
     }
 }
