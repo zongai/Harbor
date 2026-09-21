@@ -532,7 +532,7 @@ private struct TTSSegLine: View {
 
     var body: some View {
         Text(text)
-            .font(AppTypography.body(size: fontSize))
+            .font(.system(size: fontSize))
             .foregroundStyle(theme.text)
             .lineSpacing(6)
             .frame(maxWidth: .infinity, alignment: .leading)
