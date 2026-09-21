@@ -2089,7 +2089,11 @@ class AppStore: AIService.Runtime {
     }
 
     func saveDeepLKeys(_ keys: [String]) {
-        let cleaned = keys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        var seen = Set<String>()
+        let cleaned = keys
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0).inserted }
         let multiKey = "deepl_translate_keys"
         if cleaned.isEmpty {
             Keychain.delete(key: multiKey)

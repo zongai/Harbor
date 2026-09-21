@@ -6,6 +6,8 @@ struct TranslationSettingsView: View {
     @State private var newMicrosoftKey = ""
     @State private var deeplKeys: [String] = []
     @State private var newDeepLKey = ""
+    @State private var showDeepLBatchEditor = false
+    @State private var deepLBatchText = ""
     @State private var testingEngine: TranslationEngine?
     @State private var testMessage: String?
     @State private var testIsError = false
@@ -151,20 +153,25 @@ struct TranslationSettingsView: View {
                     }
                 }
                 HStack {
-                    TextField("添加 DeepL Key", text: $newDeepLKey)
+                    TextField("添加 Key（支持逗号/换行批量）", text: $newDeepLKey)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     Button("添加") {
-                        let k = newDeepLKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !k.isEmpty else { return }
-                        deeplKeys.append(k)
-                        store.saveDeepLKeys(deeplKeys)
+                        addDeepLKeys(from: newDeepLKey)
                         newDeepLKey = ""
                     }
                 }
+                Button {
+                    deepLBatchText = deeplKeys.joined(separator: "\n")
+                    showDeepLBatchEditor = true
+                } label: {
+                    Label("批量粘贴 / 编辑全部 Key", systemImage: "doc.on.clipboard")
+                }
                 testButton(for: .deepl)
             } header: { Text("DeepL（多 Key）") }
-            footer: { Text("多 Key 自动轮询；无效 Key 跳过约 1 小时，限流 Key 跳过约 5 分钟；全部失败回退 Google。") }
+            footer: {
+                Text("支持一次粘贴多个 Key（换行、逗号、分号或空格分隔），自动去重。多 Key 轮询；无效 Key 跳过约 1 小时，限流约 5 分钟；全部失败回退 Google。")
+            }
 
             // MyMemory
             Section {
@@ -214,8 +221,63 @@ struct TranslationSettingsView: View {
             microsoftKeys = store.loadMicrosoftKeys()
             deeplKeys = store.loadDeepLKeys()
         }
+        .sheet(isPresented: $showDeepLBatchEditor) {
+            NavigationStack {
+                TextEditor(text: $deepLBatchText)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(8)
+                    .navigationTitle("DeepL Keys")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("取消") { showDeepLBatchEditor = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("保存") {
+                                replaceDeepLKeys(from: deepLBatchText)
+                                showDeepLBatchEditor = false
+                            }
+                        }
+                    }
+            }
+            .presentationDetents([.medium, .large])
+        }
         .onChange(of: store.targetLanguage) { _, _ in store.persistSettings() }
         .onChange(of: store.aiOutputLanguage) { _, _ in store.persistSettings() }
+    }
+
+    /// 解析批量 Key：换行 / 逗号 / 分号 / 空白
+    private func parseAPIKeys(_ raw: String) -> [String] {
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;"))
+        let parts = raw.components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for p in parts where seen.insert(p).inserted {
+            ordered.append(p)
+        }
+        return ordered
+    }
+
+    private func addDeepLKeys(from raw: String) {
+        let incoming = parseAPIKeys(raw)
+        guard !incoming.isEmpty else { return }
+        var seen = Set(deeplKeys)
+        var added = 0
+        for k in incoming where seen.insert(k).inserted {
+            deeplKeys.append(k)
+            added += 1
+        }
+        guard added > 0 else { return }
+        store.saveDeepLKeys(deeplKeys)
+        deeplKeyOK = [:]
+    }
+
+    private func replaceDeepLKeys(from raw: String) {
+        deeplKeys = parseAPIKeys(raw)
+        store.saveDeepLKeys(deeplKeys)
+        deeplKeyOK = [:]
     }
 
     private func maskSecret(_ key: String) -> String {
