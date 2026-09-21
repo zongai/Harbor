@@ -142,18 +142,22 @@ struct SettingsView: View {
                     }
                     .onChange(of: store.ttsVoice) { _, _ in store.persistSettings() }
                     HStack {
-                        Text("朗读语速")
+                        Text("默认朗读语速")
                         Spacer()
                         Text(ttsRateLabel)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                     Slider(value: $settings.ttsRate, in: 0.5...2.0, step: 0.05)
-                        .onChange(of: store.ttsRate) { _, _ in store.persistSettings() }
+                        .onChange(of: settings.ttsRate) { _, v in
+                            // 文章与书籍共用默认语速
+                            settings.bookTTSRate = v
+                            store.persistSettings()
+                        }
                 } header: {
                     Text("阅读")
                 } footer: {
-                    Text("字号随系统「更大字体」缩放。行距随正文字号自动调整。朗读使用 Edge 在线语音，无需 API Key。")
+                    Text("字号随系统「更大字体」缩放。行距随正文字号自动调整。默认语速同时作用于文章与书籍朗读（阅读中仍可临时调节）。Edge 在线语音，无需 API Key。")
                 }
 
                 // MARK: 订阅

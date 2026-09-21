@@ -29,13 +29,15 @@ struct BookSettingsView: View {
                     HStack {
                         Text("默认朗读语速")
                         Spacer()
-                        Text(String(format: "%.2gx", ttsRate))
+                        Text(String(format: "%.2fx", ttsRate))
                             .foregroundStyle(theme.muted)
+                            .monospacedDigit()
                     }
-                    Slider(value: $ttsRate, in: 0.75...2.0, step: 0.25) {
+                    Slider(value: $ttsRate, in: 0.5...2.0, step: 0.05) {
                         Text("语速")
                     }
                     .onChange(of: ttsRate) { _, v in
+                        settings.ttsRate = v
                         settings.bookTTSRate = v
                         store.persistSettings()
                     }
@@ -48,7 +50,7 @@ struct BookSettingsView: View {
             } header: {
                 Text("书籍阅读")
             } footer: {
-                Text("阅读器首次打开一本书时应用默认模式与语速；双语朗读会按段落语种选择 Edge Voice。")
+                Text("与「设置 → 阅读 → 默认朗读语速」为同一项。打开书籍时应用；双语朗读按段落语种选 Edge Voice。")
             }
 
             Section {
@@ -71,7 +73,7 @@ struct BookSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             readingMode = BookReadingMode(rawValue: settings.bookDefaultReadingMode) ?? .original
-            ttsRate = settings.bookTTSRate
+            ttsRate = settings.ttsRate
             refreshSizes()
         }
         .confirmationDialog("清除全部离线语音？", isPresented: $confirmClearTTS, titleVisibility: .visible) {

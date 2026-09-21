@@ -412,11 +412,11 @@ struct BookReaderView: View {
     }
 
     private func bootstrap() {
-        // 应用设置中的默认模式 / 语速
+        // 应用设置中的默认模式 / 语速（与文章共用 ttsRate）
         if let mode = BookReadingMode(rawValue: store.settings.bookDefaultReadingMode) {
             readingMode = mode
         }
-        ttsRate = store.settings.bookTTSRate
+        ttsRate = store.ttsRate
         bookTTS.playbackRate = ttsRate
 
         guard let b = library.books.first(where: { $0.id == bookID }) else {
