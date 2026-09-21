@@ -102,6 +102,8 @@ final class BookLibrary {
         books.removeAll { $0.id == id }
         saveIndex()
         try? FileManager.default.removeItem(at: Self.bookDirectory(id: id))
+        BookTTSController.clearBookCache(bookID: id)
+        BookTranslationService.clearBook(bookID: id)
     }
 
     func updateBook(_ book: Book) {

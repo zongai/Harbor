@@ -3572,7 +3572,10 @@ class AppStore: AIService.Runtime {
             aiBlacklistTerms: aiBlacklistTerms,
             articleBlacklistTerms: articleBlacklistTerms,
             aiBlacklistFallbackProviderID: aiBlacklistFallbackProviderID,
-            defaultChatProviderID: defaultChatProviderID
+            defaultChatProviderID: defaultChatProviderID,
+            bookDefaultReadingMode: settings.bookDefaultReadingMode,
+            bookTTSRate: settings.bookTTSRate,
+            bookAutoLanguageVoice: settings.bookAutoLanguageVoice
         )
     }
 
@@ -3615,6 +3618,9 @@ class AppStore: AIService.Runtime {
         interestWeights = s.interestWeights
         ttsVoice = s.ttsVoice
         ttsRate = s.ttsRate
+        settings.bookDefaultReadingMode = s.bookDefaultReadingMode
+        settings.bookTTSRate = s.bookTTSRate
+        settings.bookAutoLanguageVoice = s.bookAutoLanguageVoice
         if let theme = ReadingTheme(rawValue: s.colorThemeRaw) {
             colorTheme = theme
         } else {

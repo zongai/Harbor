@@ -55,4 +55,11 @@ final class SettingsStore {
     var microsoftTranslateRegion: String = "global"
     var lingvaCustomBase: String = ""
     var defaultChatProviderID: UUID?
+
+    // MARK: - 书籍阅读
+    /// original / translation / bilingual
+    var bookDefaultReadingMode: String = BookReadingMode.original.rawValue
+    var bookTTSRate: Double = 1.0
+    var bookAutoLanguageVoice: Bool = true
 }
+

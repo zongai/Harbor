@@ -48,7 +48,11 @@ struct PersistedAppSettings: Codable {
     var articleBlacklistTerms: [String] = []
     var aiBlacklistFallbackProviderID: UUID?
     var defaultChatProviderID: UUID?
+    var bookDefaultReadingMode: String = "original"
+    var bookTTSRate: Double = 1.0
+    var bookAutoLanguageVoice: Bool = true
 }
+
 
 enum SettingsRepository {
     static func save(_ s: PersistedAppSettings) {
@@ -86,6 +90,9 @@ enum SettingsRepository {
         }
         d.set(s.ttsVoice, forKey: "ttsVoice")
         d.set(s.ttsRate, forKey: "ttsRate")
+        d.set(s.bookDefaultReadingMode, forKey: "bookDefaultReadingMode")
+        d.set(s.bookTTSRate, forKey: "bookTTSRate")
+        d.set(s.bookAutoLanguageVoice, forKey: "bookAutoLanguageVoice")
         if !s.colorThemeRaw.isEmpty { d.set(s.colorThemeRaw, forKey: "colorTheme") }
         if !s.appearanceModeRaw.isEmpty { d.set(s.appearanceModeRaw, forKey: "appearanceMode") }
         if !s.appFontFamilyRaw.isEmpty { d.set(s.appFontFamilyRaw, forKey: "appFontFamily") }
@@ -192,6 +199,13 @@ enum SettingsRepository {
         s.ttsVoice = d.string(forKey: "ttsVoice") ?? ""
         if d.object(forKey: "ttsRate") != nil {
             s.ttsRate = min(2.0, max(0.5, d.double(forKey: "ttsRate")))
+        }
+        s.bookDefaultReadingMode = d.string(forKey: "bookDefaultReadingMode") ?? s.bookDefaultReadingMode
+        if d.object(forKey: "bookTTSRate") != nil {
+            s.bookTTSRate = min(2.0, max(0.5, d.double(forKey: "bookTTSRate")))
+        }
+        if d.object(forKey: "bookAutoLanguageVoice") != nil {
+            s.bookAutoLanguageVoice = d.bool(forKey: "bookAutoLanguageVoice")
         }
         s.colorThemeRaw = d.string(forKey: "colorTheme") ?? ""
         s.appearanceModeRaw = d.string(forKey: "appearanceMode") ?? ""

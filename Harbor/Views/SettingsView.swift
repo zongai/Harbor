@@ -206,7 +206,17 @@ struct SettingsView: View {
                 }
 
                 // MARK: 数据
-                Section {
+                                Section {
+                    NavigationLink {
+                        BookSettingsView()
+                    } label: {
+                        Label("书籍阅读与缓存", systemImage: "books.vertical")
+                    }
+                } header: {
+                    Text("书籍")
+                }
+
+Section {
                     HStack {
                         Label("缓存占用", systemImage: "internaldrive")
                         Spacer()

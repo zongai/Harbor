@@ -341,6 +341,10 @@ final class BookTTSController {
         if let cached = try? Data(contentsOf: url), !cached.isEmpty {
             return cached
         }
+        // 离线且无缓存：不调用 Edge，给出明确提示
+        if !NetworkReachability.shared.isOnline {
+            throw EdgeTTS.TTSError.network("当前无网络，且本章段语音未缓存。请联网后朗读或先「缓存本章语音」。")
+        }
         // 缓存固定用 +0% 合成，播放时用 player.rate
         let data = try await EdgeTTS.synthesize(
             text: segment.text,
@@ -400,6 +404,34 @@ final class BookTTSController {
     static func clearBookCache(bookID: UUID) {
         let dir = rootURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
+    }
+
+    static func clearAllCaches() {
+        try? FileManager.default.removeItem(at: rootURL)
+        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    }
+
+    static func totalCacheSize() -> Int64 {
+        directorySize(rootURL)
+    }
+
+    static func formattedCacheSize() -> String {
+        let b = totalCacheSize()
+        if b < 1024 { return "\(b) B" }
+        if b < 1024 * 1024 { return String(format: "%.1f KB", Double(b) / 1024) }
+        return String(format: "%.1f MB", Double(b) / (1024 * 1024))
+    }
+
+    private static func directorySize(_ url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in en {
+            if let n = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total += Int64(n)
+            }
+        }
+        return total
     }
 }
 

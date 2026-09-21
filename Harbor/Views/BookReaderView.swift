@@ -373,6 +373,13 @@ struct BookReaderView: View {
     }
 
     private func bootstrap() {
+        // 应用设置中的默认模式 / 语速
+        if let mode = BookReadingMode(rawValue: store.settings.bookDefaultReadingMode) {
+            readingMode = mode
+        }
+        ttsRate = store.settings.bookTTSRate
+        bookTTS.playbackRate = ttsRate
+
         guard let b = library.books.first(where: { $0.id == bookID }) else {
             // 尝试从磁盘 metadata 恢复
             library.load()

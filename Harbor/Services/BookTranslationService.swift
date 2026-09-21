@@ -161,4 +161,28 @@ enum BookTranslationService {
         let dir = rootURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
     }
+
+    static func clearAll() {
+        try? FileManager.default.removeItem(at: rootURL)
+        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    }
+
+    static func totalCacheSize() -> Int64 {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: rootURL, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in en {
+            if let n = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                total += Int64(n)
+            }
+        }
+        return total
+    }
+
+    static func formattedCacheSize() -> String {
+        let b = totalCacheSize()
+        if b < 1024 { return "\(b) B" }
+        if b < 1024 { return "\(b) B" }
+        return String(format: "%.1f MB", Double(b) / (1024 * 1024))
+    }
 }
