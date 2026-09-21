@@ -2,7 +2,7 @@
 
 **Harbor**（中文名：**观澜**）是原生 SwiftUI 实现的 iOS / iPadOS RSS 阅读器。支持 RSS 与 Atom，内置全文抓取、多引擎翻译、AI 摘要 / 解释 / 对话、Edge TTS 朗读、源分组、评论（Substack / HN / Engadget 等）与离线缓存。
 
-**版本**：Marketing **1.3**；Build 见 `CURRENT_PROJECT_VERSION`。CI 产物展示为 `v1.3-{build}-build{N}`。正式发行以 [Releases](https://github.com/zongai/IosRss/releases) 为准。
+**版本**：Marketing **1.3**；Build 见 `CURRENT_PROJECT_VERSION`。CI 产物展示为 `v1.3-{build}-build{N}`。正式发行以 [Releases](https://github.com/zongai/Harbor/releases) 为准。
 
 > **文档维护**：有意义的功能变更后，构建时默认同步更新 `README.md`（及按约定整理 `CHANGELOG.md`）。CI **不**自动回写文档。
 
@@ -115,7 +115,7 @@ Harbor/
 
 正式功能以 **main** 与 GitHub Releases 为准。开发分支（如 `ui-redesign-experiment`）上的 UI/性能改动可能尚未并入正式 Release。
 
-最新构建见 [GitHub Releases](https://github.com/zongai/IosRss/releases) 与 [Actions](https://github.com/zongai/IosRss/actions)。
+最新构建见 [GitHub Releases](https://github.com/zongai/Harbor/releases) 与 [Actions](https://github.com/zongai/Harbor/actions)。
 
 ## 已知限制
 

@@ -145,7 +145,7 @@ jobs:
             echo ""
             echo "$LOG"
             echo ""
-            echo "完整变更见仓库 [CHANGELOG.md](https://github.com/zongai/IosRss/blob/main/CHANGELOG.md)。"
+            echo "完整变更见仓库 [CHANGELOG.md](https://github.com/zongai/Harbor/blob/main/CHANGELOG.md)。"
             echo ""
             echo "> README 与 CHANGELOG 由维护者手动更新，CI 不再自动回写。"
           } > /tmp/release_notes.md
