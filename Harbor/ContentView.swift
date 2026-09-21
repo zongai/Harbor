@@ -44,5 +44,9 @@ struct ContentView: View {
                 store.flushPendingFeedsPersist()
             }
         }
+        .onAppear {
+            // 预热网络监视，供书籍 TTS 离线策略使用（不影响 RSS）
+            _ = NetworkReachability.shared
+        }
     }
 }

@@ -12,6 +12,20 @@
 - 搜索标题优先 + 全文批量补全；元数据列表与正文 cache 统一
 - 图片降采样清晰度、相对时间缓存、iCloud 推送按动机防抖
 
+## [1.3-101] — feature/epub-opds
+
+### Added (EPUB Phases 2–8)
+- 本地 EPUB 导入、书架、BookReader、目录与位置记忆
+- OPDS 书库浏览与 EPUB 下载入架
+- 书籍 TTS（Edge 预缓存、语速、双语 Voice）与章节翻译（原文/译文/双语）
+- 设置：书籍阅读默认项与语音/译文缓存管理
+
+### RSS 回归（Phase 9）
+- 订阅 / 搜索 / 对话 / 设置路径未改动核心数据模型
+- 收藏仍并入订阅页星标切换
+- 文章朗读仍走 `EdgeTTSPlayer` + 用户配置 Voice
+- `Article` / feeds.json 格式未破坏性变更
+
 ## [Unreleased]
 
 
