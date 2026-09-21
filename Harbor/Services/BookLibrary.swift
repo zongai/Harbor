@@ -106,9 +106,13 @@ final class BookLibrary {
     func deleteBook(id: UUID) {
         books.removeAll { $0.id == id }
         saveIndex()
+        // 书文件：EPUB / 解压 HTML / 封面 / metadata
         try? FileManager.default.removeItem(at: Self.bookDirectory(id: id))
+        // 语音缓存、译文缓存、全书任务断点
         BookTTSController.clearBookCache(bookID: id)
         BookTranslationService.clearBook(bookID: id)
+        BookJobProgress.clearTTS(bookID: id)
+        BookJobProgress.clearTranslate(bookID: id)
     }
 
     func updateBook(_ book: Book) {
