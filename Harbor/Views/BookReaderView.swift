@@ -19,6 +19,10 @@ struct BookReaderView: View {
     @State private var showChrome = true
     @State private var bookTTS = BookTTSController()
     @State private var ttsRate: Double = 1.0
+    @State private var readingMode: BookReadingMode = .original
+    @State private var chapterTranslation: BookChapterTranslation?
+    @State private var isTranslatingChapter = false
+    @State private var translationProgressText: String?
 
     private var chapters: [BookChapter] {
         book?.chapters.sorted(by: { $0.index < $1.index }) ?? []
@@ -79,19 +83,29 @@ struct BookReaderView: View {
                     Text(loadError)
                         .font(AppTypography.body())
                         .foregroundStyle(.red)
-                } else if chapterHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("本章无文本内容")
+                } else if displayHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(emptyContentHint)
                         .font(AppTypography.body())
                         .foregroundStyle(theme.muted)
                         .padding(.vertical, 24)
                 } else {
+                    if isTranslatingChapter {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text(translationProgressText ?? "翻译中…")
+                                .font(AppTypography.caption())
+                                .foregroundStyle(theme.muted)
+                        }
+                        .padding(.vertical, 8)
+                    }
                     // 复用 RSS 正文组件：选区 + AI 解释
                     ArticleContentView(
-                        html: chapterHTML,
+                        html: displayHTML,
                         fontSize: store.fontSize,
-                        prefersChineseTypography: prefersChinese(book),
+                        prefersChineseTypography: prefersChineseForDisplay(book),
                         articleTitle: currentChapter?.title ?? ""
                     )
+                    .id("\(readingMode.rawValue)-\(currentChapter?.id.uuidString ?? "")-\(chapterTranslation?.updatedAt.timeIntervalSince1970 ?? 0)")
                 }
             }
             .padding(.horizontal, AppLayout.readingHorizontalPadding)
@@ -103,6 +117,34 @@ struct BookReaderView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    ForEach(BookReadingMode.allCases) { mode in
+                        Button {
+                            readingMode = mode
+                        } label: {
+                            HStack {
+                                Text(mode.title)
+                                if readingMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button {
+                        Task { await translateCurrentChapter() }
+                    } label: {
+                        Label(
+                            chapterTranslation?.status == .done ? "重新翻译本章" : "翻译本章",
+                            systemImage: "character.book.closed"
+                        )
+                    }
+                    .disabled(chapterHTML.isEmpty || isTranslatingChapter)
+                } label: {
+                    Label("阅读模式", systemImage: "text.book.closed")
+                }
+                .labelStyle(.iconOnly)
+
                 Menu {
                     ForEach([0.75, 1.0, 1.25, 1.5, 1.75, 2.0], id: \.self) { r in
                         Button {
@@ -258,6 +300,71 @@ struct BookReaderView: View {
         return Double(chapterIndex + 1) / Double(n)
     }
 
+
+    private var displayHTML: String {
+        switch readingMode {
+        case .original:
+            return chapterHTML
+        case .translation:
+            return chapterTranslation?.translationHTML ?? ""
+        case .bilingual:
+            return chapterTranslation?.bilingualHTML ?? chapterHTML
+        }
+    }
+
+    private var emptyContentHint: String {
+        switch readingMode {
+        case .original:
+            return "本章无文本内容"
+        case .translation:
+            return chapterTranslation == nil ? "尚未翻译本章，请在「阅读模式」中选择翻译本章" : "译文为空"
+        case .bilingual:
+            return "本章无文本内容"
+        }
+    }
+
+    private func prefersChineseForDisplay(_ book: Book) -> Bool {
+        if readingMode == .translation { return true }
+        if readingMode == .bilingual { return true }
+        return prefersChinese(book)
+    }
+
+    private func loadTranslationIfNeeded() {
+        guard let ch = currentChapter else {
+            chapterTranslation = nil
+            return
+        }
+        chapterTranslation = BookTranslationService.load(bookID: bookID, chapterID: ch.id)
+    }
+
+    private func translateCurrentChapter() async {
+        guard let ch = currentChapter, !chapterHTML.isEmpty else { return }
+        isTranslatingChapter = true
+        translationProgressText = "准备翻译…"
+        loadError = nil
+        do {
+            let result = try await BookTranslationService.translateChapter(
+                bookID: bookID,
+                chapterID: ch.id,
+                html: chapterHTML,
+                targetLanguage: store.targetLanguage,
+                store: store
+            ) { p, msg in
+                Task { @MainActor in
+                    translationProgressText = msg
+                }
+            }
+            chapterTranslation = result
+            if readingMode == .original {
+                readingMode = .bilingual
+            }
+        } catch {
+            loadError = error.localizedDescription
+        }
+        isTranslatingChapter = false
+        translationProgressText = nil
+    }
+
     private func prefersChinese(_ book: Book) -> Bool {
         let lang = (book.language ?? "").lowercased()
         return lang.contains("zh") || lang.contains("chinese") || lang.hasPrefix("cn")
@@ -303,6 +410,7 @@ struct BookReaderView: View {
                 loadError = "无法加载本章内容（\(ch.href)）"
             }
             isLoadingChapter = false
+            loadTranslationIfNeeded()
         }
     }
 
