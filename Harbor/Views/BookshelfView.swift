@@ -38,7 +38,12 @@ struct BookshelfView: View {
                     Section("最近阅读") {
                         ForEach(recentBooks) { book in
                             NavigationLink(value: book.id) {
-                                BookRow(book: book)
+                                BookRow(
+                                    book: book,
+                                    batchProgress: batchProgress(for: book.id),
+                                    batchText: batchText(for: book.id),
+                                    onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil
+                                )
                             }
                             .listRowBackground(Color.clear)
                             .contextMenu { bookContextMenu(book) }
@@ -55,7 +60,12 @@ struct BookshelfView: View {
                     } else {
                         ForEach(library.books) { book in
                             NavigationLink(value: book.id) {
-                                BookRow(book: book)
+                                BookRow(
+                                    book: book,
+                                    batchProgress: batchProgress(for: book.id),
+                                    batchText: batchText(for: book.id),
+                                    onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil
+                                )
                             }
                             .listRowBackground(Color.clear)
                             .contextMenu { bookContextMenu(book) }
@@ -146,33 +156,6 @@ struct BookshelfView: View {
                     ProgressView("正在导入…")
                         .padding()
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                } else if isBatchWorking {
-                    VStack(spacing: 10) {
-                        ProgressView(value: batchProgress)
-                            .frame(width: 180)
-                        Text(batchProgressText ?? "处理中…")
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted)
-                            .multilineTextAlignment(.center)
-                        Button("取消") {
-                            batchTask?.cancel()
-                            bookBatchTTS.stop()
-                            if let id = batchWorkingBookID {
-                                if batchPickerKind == .tts || bookBatchTTS.isCaching {
-                                    let idx = BookJobProgress.loadTTS(bookID: id) ?? 0
-                                    BookJobProgress.markTTSInterrupted(bookID: id, chapterIndex: idx)
-                                } else {
-                                    let idx = BookJobProgress.loadTranslate(bookID: id) ?? 0
-                                    BookJobProgress.markTranslateInterrupted(bookID: id, chapterIndex: idx)
-                                }
-                            }
-                            isBatchWorking = false
-                            batchProgressText = "已暂停，可继续"
-                        }
-                        .font(AppTypography.caption())
-                    }
-                    .padding(16)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
             .sheet(isPresented: $showImporter) {
@@ -224,6 +207,32 @@ struct BookshelfView: View {
                 )
             }
         }
+    }
+
+    private func batchProgress(for id: UUID) -> Double? {
+        guard isBatchWorking, batchWorkingBookID == id else { return nil }
+        return batchProgress
+    }
+
+    private func batchText(for id: UUID) -> String? {
+        guard isBatchWorking, batchWorkingBookID == id else { return nil }
+        return batchProgressText
+    }
+
+    private func cancelBatch() {
+        batchTask?.cancel()
+        bookBatchTTS.stop()
+        if let id = batchWorkingBookID {
+            if batchPickerKind == .tts || bookBatchTTS.isCaching {
+                let idx = BookJobProgress.loadTTS(bookID: id) ?? 0
+                BookJobProgress.markTTSInterrupted(bookID: id, chapterIndex: idx)
+            } else {
+                let idx = BookJobProgress.loadTranslate(bookID: id) ?? 0
+                BookJobProgress.markTranslateInterrupted(bookID: id, chapterIndex: idx)
+            }
+        }
+        isBatchWorking = false
+        batchProgressText = "已暂停，可继续"
     }
 
     @ViewBuilder
@@ -435,32 +444,66 @@ private struct BookRow: View {
     @Environment(BookLibrary.self) private var library
     @Environment(\.theme) private var theme
     let book: Book
+    var batchProgress: Double? = nil
+    var batchText: String? = nil
+    var onCancelBatch: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 12) {
-            cover
-            VStack(alignment: .leading, spacing: 4) {
-                Text(book.title)
-                    .font(AppTypography.listTitle())
-                    .foregroundStyle(theme.text)
-                    .lineLimit(2)
-                if let author = book.author, !author.isEmpty {
-                    Text(author)
-                        .font(AppTypography.caption())
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                cover
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(book.title)
+                        .font(AppTypography.listTitle())
+                        .foregroundStyle(theme.text)
+                        .lineLimit(2)
+                    if let author = book.author, !author.isEmpty {
+                        Text(author)
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.muted)
+                            .lineLimit(1)
+                    }
+                    HStack(spacing: 4) {
+                        Text("\(book.totalChapters) 章")
+                        if let lang = book.language, !lang.isEmpty {
+                            Text("·")
+                            Text(lang)
+                        }
+                        if book.readingProgress > 0.01 {
+                            Text("·")
+                            Text(book.progressPercentText)
+                        }
+                    }
+                    .font(AppTypography.caption())
+                    .foregroundStyle(theme.muted)
                 }
-                HStack(spacing: 4) {
-                    Text("\(book.totalChapters) 章")
-                    if let lang = book.language, !lang.isEmpty {
-                        Text("·")
-                        Text(lang)
+                Spacer(minLength: 0)
+            }
+
+            // 阅读进度（有进度时显示在书名信息下方）
+            if book.readingProgress > 0.01, batchProgress == nil {
+                ProgressView(value: min(1, max(0, book.readingProgress)))
+                    .tint(theme.accent)
+            }
+
+            // 全书翻译 / TTS 任务进度（仅当前处理的书）
+            if let batchProgress {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: min(1, max(0, batchProgress)))
+                        .tint(theme.accent)
+                    HStack {
+                        Text(batchText ?? "处理中…")
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.muted)
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        if let onCancelBatch {
+                            Button("取消", action: onCancelBatch)
+                                .font(AppTypography.caption())
+                        }
                     }
                 }
-                .font(AppTypography.caption())
-                .foregroundStyle(theme.muted)
             }
-            Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
     }
