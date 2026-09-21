@@ -18,6 +18,10 @@ final class BookTTSController {
     var currentSegmentText: String = ""
     /// 当前队列只读快照（朗读时用于分段跟随）
     var activeSegments: [Segment] = []
+    /// 本章队列正常播完（非取消）时递增，供阅读页自动翻章续读
+    var chapterFinishedToken: Int = 0
+    /// 是否在章末自动请求续读（由阅读页决定是否翻章）
+    var continuousChapterPlay: Bool = true
 
     /// 0.5 ... 3.0，仅影响 AVAudioPlayer.rate
     var playbackRate: Double = 1.0 {
@@ -365,8 +369,13 @@ final class BookTTSController {
         if my == session {
             isPlaying = false
             isLoading = false
-            statusText = "本章朗读完成"
             player = nil
+            if continuousChapterPlay {
+                statusText = "本章完成，准备下一章…"
+                chapterFinishedToken &+= 1
+            } else {
+                statusText = "本章朗读完成"
+            }
         }
     }
 
