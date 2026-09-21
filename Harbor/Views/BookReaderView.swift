@@ -292,6 +292,12 @@ struct BookReaderView: View {
                             systemImage: continuousTTS ? "checkmark.circle.fill" : "circle"
                         )
                     }
+                    Button {
+                        startTTSPlayback(forceFromStart: true)
+                    } label: {
+                        Label("从头朗读本章", systemImage: "backward.end")
+                    }
+                    .disabled(chapterHTML.isEmpty || bookTTS.isPlaying || bookTTS.isLoading)
                 } label: {
                     Label("语速", systemImage: "gauge.with.dots.needle.33percent")
                 }
@@ -322,15 +328,19 @@ struct BookReaderView: View {
             withAnimation(.easeInOut(duration: 0.25)) {
                 proxy.scrollTo("tts-seg-\(idx)", anchor: .center)
             }
+            // 朗读推进时同步阅读进度，关闭再开仍在附近
+            if bookTTS.segmentCount > 0 {
+                scrollProgress = Double(idx) / Double(max(bookTTS.segmentCount, 1))
+            }
         }
         .onChange(of: bookTTS.chapterFinishedToken) { _, _ in
             handleChapterTTSFinished()
         }
         .onChange(of: isLoadingChapter) { _, loading in
-            // 自动续读：下一章 HTML 就绪后启动朗读
+            // 自动续读：下一章 HTML 就绪后从章首启动
             if !loading, pendingContinueTTS, !chapterHTML.isEmpty {
                 pendingContinueTTS = false
-                startTTSPlayback()
+                startTTSPlayback(forceFromStart: true)
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -544,15 +554,18 @@ struct BookReaderView: View {
         if bookTTS.isPlaying || bookTTS.isLoading {
             pendingContinueTTS = false
             bookTTS.stop()
+            syncReadingPositionFromTTS()
             return
         }
-        startTTSPlayback()
+        startTTSPlayback(forceFromStart: false)
     }
 
-    private func startTTSPlayback() {
+    private func startTTSPlayback(forceFromStart: Bool = false) {
         guard let ch = currentChapter, !chapterHTML.isEmpty else { return }
         bookTTS.continuousChapterPlay = continuousTTS
         bookTTS.playbackRate = ttsRate
+        // 自动换章续读从章首；用户点朗读则恢复断点
+        let resume = !forceFromStart
         bookTTS.toggleContent(
             bookID: bookID,
             chapterID: ch.id,
@@ -560,8 +573,17 @@ struct BookReaderView: View {
             html: chapterHTML,
             translation: chapterTranslation,
             voice: store.ttsVoice.isEmpty ? nil : store.ttsVoice,
-            rate: ttsRate
+            rate: ttsRate,
+            resumeFromSaved: resume,
+            forceFromStart: forceFromStart
         )
+    }
+
+    private func syncReadingPositionFromTTS() {
+        guard bookTTS.segmentCount > 0 else { return }
+        let frac = Double(bookTTS.segmentIndex) / Double(max(bookTTS.segmentCount, 1))
+        scrollProgress = min(1, max(0, frac))
+        persistPosition()
     }
 
     private func handleChapterTTSFinished() {
@@ -693,11 +715,11 @@ struct BookReaderView: View {
             let keep = Set(adjacentChapterIDs(around: chapterIndex) + [chapterID])
             chapterHTMLCache = chapterHTMLCache.filter { keep.contains($0.key) }
         }
-        // 自动换章朗读：新章内容就绪后继续
+        // 自动换章朗读：新章内容就绪后从章首继续
         if pendingContinueTTS {
             pendingContinueTTS = false
             DispatchQueue.main.async {
-                self.startTTSPlayback()
+                self.startTTSPlayback(forceFromStart: true)
             }
         }
     }

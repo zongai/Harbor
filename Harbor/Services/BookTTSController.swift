@@ -148,6 +148,17 @@ final class BookTTSController {
     // MARK: - Playback
 
     func stop() {
+        // 停止前记下当前段，下次从该段继续（对齐 Readest：位置与阅读进度绑定）
+        if let bid = activeBookID, let cid = activeChapterID, !queue.isEmpty {
+            let idx = min(max(0, segmentIndex), queue.count - 1)
+            BookTTSPositionStore.save(
+                bookID: bid,
+                chapterID: cid,
+                mode: activeMode,
+                segmentIndex: idx,
+                segmentID: queue[idx].id
+            )
+        }
         session += 1
         playTask?.cancel()
         playTask = nil
@@ -160,6 +171,8 @@ final class BookTTSController {
         statusText = nil
         currentSegmentText = ""
         activeSegments = []
+        activeBookID = nil
+        activeChapterID = nil
     }
 
     func toggleChapter(
@@ -181,6 +194,8 @@ final class BookTTSController {
     }
 
     /// 按阅读模式组队列：双语则原文段 + 译文段交替，并按语种选 Voice
+    /// - Parameter resumeFromSaved: 若有同章同模式断点则从该段继续（默认 true）
+    /// - Parameter forceFromStart: 强制从章首朗读，并清除断点
     func toggleContent(
         bookID: UUID,
         chapterID: UUID,
@@ -188,7 +203,9 @@ final class BookTTSController {
         html: String,
         translation: BookChapterTranslation?,
         voice: String?,
-        rate: Double
+        rate: Double,
+        resumeFromSaved: Bool = true,
+        forceFromStart: Bool = false
     ) {
         if isPlaying || isLoading {
             stop()
@@ -207,13 +224,43 @@ final class BookTTSController {
                 : "没有可朗读的文本"
             return
         }
+        if forceFromStart {
+            BookTTSPositionStore.clear(bookID: bookID)
+        }
+        var startIndex = 0
+        if resumeFromSaved, !forceFromStart,
+           let pos = BookTTSPositionStore.load(bookID: bookID),
+           pos.chapterID == chapterID,
+           pos.mode == mode.rawValue,
+           pos.segmentIndex >= 0,
+           pos.segmentIndex < segs.count {
+            // 优先按 segmentID 对齐（切分规则变化时更稳）
+            if let sid = pos.segmentID,
+               let byID = segs.firstIndex(where: { $0.id == sid }) {
+                startIndex = byID
+            } else {
+                startIndex = pos.segmentIndex
+            }
+        }
         queue = segs
         activeSegments = segs
+        activeBookID = bookID
+        activeChapterID = chapterID
+        activeMode = mode
         segmentCount = segs.count
-        segmentIndex = 0
-        currentSegmentText = segs.first?.text ?? ""
-        playTask = Task { await runQueue(bookID: bookID, chapterID: chapterID, voice: voice) }
+        segmentIndex = startIndex
+        currentSegmentText = segs[startIndex].text
+        if startIndex > 0 {
+            statusText = "从第 \(startIndex + 1)/\(segs.count) 段继续"
+        }
+        playTask = Task {
+            await runQueue(bookID: bookID, chapterID: chapterID, voice: voice, startIndex: startIndex)
+        }
     }
+
+    private var activeBookID: UUID?
+    private var activeChapterID: UUID?
+    private var activeMode: BookReadingMode = .original
 
     static func buildSegments(
         mode: BookReadingMode,
@@ -273,7 +320,7 @@ final class BookTTSController {
         }
     }
 
-    private func runQueue(bookID: UUID, chapterID: UUID, voice: String?) async {
+    private func runQueue(bookID: UUID, chapterID: UUID, voice: String?, startIndex: Int = 0) async {
         let my = session
         isLoading = true
         errorMessage = nil
@@ -286,15 +333,25 @@ final class BookTTSController {
             return
         }
 
-        // 预取：播放当前段时后台合成下 1～2 段，缩短段间等待
+        // 预取：播放当前段时后台合成后续段，缩短段间等待
         var prefetchTasks: [Int: Task<Data?, Never>] = [:]
+        let begin = max(0, min(startIndex, max(queue.count - 1, 0)))
 
-        for (i, seg) in queue.enumerated() {
+        for i in begin..<queue.count {
+            let seg = queue[i]
             if Task.isCancelled || my != session { return }
             segmentIndex = i
             currentSegmentText = seg.text
             statusText = "朗读 \(i + 1)/\(queue.count)"
             isLoading = true
+            // 每段开始时落盘断点（杀进程可恢复）
+            BookTTSPositionStore.save(
+                bookID: bookID,
+                chapterID: chapterID,
+                mode: activeMode,
+                segmentIndex: i,
+                segmentID: seg.id
+            )
 
             // 启动后续段预取（最多 3 段，压低段间等待）
             for lookAhead in 1...3 {
@@ -370,6 +427,8 @@ final class BookTTSController {
             isPlaying = false
             isLoading = false
             player = nil
+            // 本章播完：清除本章断点，避免下次仍卡在章末
+            BookTTSPositionStore.clear(bookID: bookID)
             if continuousChapterPlay {
                 statusText = "本章完成，准备下一章…"
                 chapterFinishedToken &+= 1
@@ -625,6 +684,55 @@ final class BookTTSController {
             }
         }
         return total
+    }
+}
+
+// MARK: - 朗读断点（按书：章节 + 段索引；对齐 Readest 位置记忆思路）
+
+enum BookTTSPositionStore {
+    struct Position: Codable {
+        var bookID: UUID
+        var chapterID: UUID
+        var mode: String
+        var segmentIndex: Int
+        var segmentID: String?
+        var updatedAt: Date
+    }
+
+    private static var dir: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let url = base.appendingPathComponent("Harbor/TTSPosition", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private static func fileURL(bookID: UUID) -> URL {
+        dir.appendingPathComponent("\(bookID.uuidString).json")
+    }
+
+    static func save(bookID: UUID, chapterID: UUID, mode: BookReadingMode, segmentIndex: Int, segmentID: String?) {
+        let p = Position(
+            bookID: bookID,
+            chapterID: chapterID,
+            mode: mode.rawValue,
+            segmentIndex: max(0, segmentIndex),
+            segmentID: segmentID,
+            updatedAt: Date()
+        )
+        if let data = try? JSONEncoder().encode(p) {
+            try? data.write(to: fileURL(bookID: bookID), options: [.atomic])
+        }
+    }
+
+    static func load(bookID: UUID) -> Position? {
+        guard let data = try? Data(contentsOf: fileURL(bookID: bookID)),
+              let p = try? JSONDecoder().decode(Position.self, from: data) else { return nil }
+        return p
+    }
+
+    static func clear(bookID: UUID) {
+        try? FileManager.default.removeItem(at: fileURL(bookID: bookID))
     }
 }
 

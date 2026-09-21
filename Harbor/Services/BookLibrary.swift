@@ -113,6 +113,7 @@ final class BookLibrary {
         BookTranslationService.clearBook(bookID: id)
         BookJobProgress.clearTTS(bookID: id)
         BookJobProgress.clearTranslate(bookID: id)
+        BookTTSPositionStore.clear(bookID: id)
     }
 
     func updateBook(_ book: Book) {
