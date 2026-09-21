@@ -16,6 +16,10 @@ struct BookshelfView: View {
     @State private var batchProgress: Double = 0
     @State private var isBatchWorking = false
     @State private var bookBatchTTS = BookTTSController()
+    /// 全书任务：选起始章
+    @State private var batchPickerBook: Book?
+    @State private var batchPickerKind: BookBatchKind = .translate
+    @State private var batchStartChapterIndex: Int = 0
 
     private var recentBooks: [Book] {
         library.books
@@ -191,21 +195,39 @@ struct BookshelfView: View {
             } message: {
                 Text(importError ?? "")
             }
+            .sheet(item: $batchPickerBook) { book in
+                BookBatchStartPicker(
+                    book: book,
+                    kind: batchPickerKind,
+                    initialIndex: suggestedStartIndex(for: book, kind: batchPickerKind),
+                    onConfirm: { startIdx in
+                        batchPickerBook = nil
+                        if batchPickerKind == .translate {
+                            runWholeBookTranslate(book, from: startIdx)
+                        } else {
+                            runWholeBookTTSCache(book, from: startIdx)
+                        }
+                    },
+                    onCancel: { batchPickerBook = nil }
+                )
+            }
         }
     }
 
     @ViewBuilder
     private func bookContextMenu(_ book: Book) -> some View {
         Button {
-            startWholeBookTranslate(book)
+            batchPickerKind = .translate
+            batchPickerBook = book
         } label: {
-            Label("全书翻译", systemImage: "character.book.closed")
+            Label("全书翻译…", systemImage: "character.book.closed")
         }
         .disabled(isBatchWorking)
         Button {
-            startWholeBookTTSCache(book)
+            batchPickerKind = .tts
+            batchPickerBook = book
         } label: {
-            Label("全书 TTS 缓存", systemImage: "arrow.down.circle")
+            Label("全书 TTS 缓存…", systemImage: "arrow.down.circle")
         }
         .disabled(isBatchWorking)
         Divider()
@@ -216,7 +238,17 @@ struct BookshelfView: View {
         }
     }
 
-    private func startWholeBookTranslate(_ book: Book) {
+    private func suggestedStartIndex(for book: Book, kind: BookBatchKind) -> Int {
+        let resume: Int?
+        switch kind {
+        case .translate: resume = BookJobProgress.loadTranslate(bookID: book.id)
+        case .tts: resume = BookJobProgress.loadTTS(bookID: book.id)
+        }
+        if let r = resume { return r }
+        return book.chapters.map(\.index).min() ?? 0
+    }
+
+    private func runWholeBookTranslate(_ book: Book, from startIdx: Int) {
         isBatchWorking = true
         batchProgress = 0
         batchProgressText = "准备全书翻译…"
@@ -225,7 +257,8 @@ struct BookshelfView: View {
                 try await BookTranslationService.translateBook(
                     book: book,
                     targetLanguage: store.targetLanguage,
-                    store: store
+                    store: store,
+                    fromChapterIndex: startIdx
                 ) { p, msg in
                     Task { @MainActor in
                         batchProgress = p
@@ -242,12 +275,12 @@ struct BookshelfView: View {
         }
     }
 
-    private func startWholeBookTTSCache(_ book: Book) {
+    private func runWholeBookTTSCache(_ book: Book, from startIdx: Int) {
         isBatchWorking = true
         batchProgress = 0
         batchProgressText = "准备全书语音缓存…"
         let voice = store.ttsVoice.isEmpty ? nil : store.ttsVoice
-        bookBatchTTS.precacheBook(book: book, voice: voice) { p, msg in
+        bookBatchTTS.precacheBook(book: book, voice: voice, fromChapterIndex: startIdx) { p, msg in
             batchProgress = p
             batchProgressText = msg
             if p >= 1 {
@@ -265,6 +298,65 @@ struct BookshelfView: View {
             }
             isBatchWorking = false
         }
+    }
+}
+
+private enum BookBatchKind {
+    case translate, tts
+}
+
+/// 选择全书任务起始章节
+private struct BookBatchStartPicker: View {
+    let book: Book
+    let kind: BookBatchKind
+    let initialIndex: Int
+    let onConfirm: (Int) -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedIndex: Int = 0
+
+    private var chapters: [BookChapter] {
+        book.chapters.sorted { $0.index < $1.index }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(kind == .translate ? "从选定章节开始翻译（之前的章节跳过）。已译章节仍会跳过。" : "从选定章节开始缓存语音。已有音频文件会自动命中，不重复请求。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("起始章节") {
+                    Picker("章节", selection: $selectedIndex) {
+                        ForEach(chapters, id: \.id) { ch in
+                            Text(chapterLabel(ch)).tag(ch.index)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.inline)
+                }
+            }
+            .navigationTitle(kind == .translate ? "全书翻译" : "全书 TTS")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: onCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("开始") { onConfirm(selectedIndex) }
+                }
+            }
+            .onAppear { selectedIndex = initialIndex }
+        }
+    }
+
+    private func chapterLabel(_ ch: BookChapter) -> String {
+        let t = ch.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty {
+            return "\(ch.index + 1). \(t)"
+        }
+        return "第 \(ch.index + 1) 章"
     }
 }
 

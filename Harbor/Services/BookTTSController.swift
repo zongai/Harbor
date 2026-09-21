@@ -282,20 +282,56 @@ final class BookTTSController {
             return
         }
 
+        // 预取：播放当前段时后台合成下 1～2 段，缩短段间等待
+        var prefetchTasks: [Int: Task<Data?, Never>] = [:]
+
         for (i, seg) in queue.enumerated() {
             if Task.isCancelled || my != session { return }
             segmentIndex = i
             currentSegmentText = seg.text
             statusText = "朗读 \(i + 1)/\(queue.count)"
             isLoading = true
+
+            // 启动后续段预取（最多 2 段）
+            for lookAhead in 1...2 {
+                let next = i + lookAhead
+                guard next < queue.count, prefetchTasks[next] == nil else { continue }
+                let nextSeg = queue[next]
+                prefetchTasks[next] = Task {
+                    try? await audioData(
+                        bookID: bookID,
+                        chapterID: chapterID,
+                        segment: nextSeg,
+                        voice: voice,
+                        session: my
+                    )
+                }
+            }
+
             do {
-                let data = try await audioData(
-                    bookID: bookID,
-                    chapterID: chapterID,
-                    segment: seg,
-                    voice: voice,
-                    session: my
-                )
+                let data: Data
+                if let pref = prefetchTasks[i] {
+                    if let d = await pref.value {
+                        data = d
+                    } else {
+                        data = try await audioData(
+                            bookID: bookID,
+                            chapterID: chapterID,
+                            segment: seg,
+                            voice: voice,
+                            session: my
+                        )
+                    }
+                    prefetchTasks[i] = nil
+                } else {
+                    data = try await audioData(
+                        bookID: bookID,
+                        chapterID: chapterID,
+                        segment: seg,
+                        voice: voice,
+                        session: my
+                    )
+                }
                 if my != session { return }
                 let p = try AVAudioPlayer(data: data)
                 p.enableRate = true
@@ -310,7 +346,6 @@ final class BookTTSController {
                         p.stop()
                         return
                     }
-                    // 允许中途改速
                     p.rate = Float(max(0.5, min(3.0, playbackRate)))
                     try await Task.sleep(nanoseconds: 150_000_000)
                 }
@@ -344,25 +379,30 @@ final class BookTTSController {
     ) async throws -> Data {
         let configured = segment.autoVoice ? nil : voice
         let resolved = EdgeTTS.preferredVoice(for: segment.text, configured: configured)
-        // 缓存键含语种，避免中英共用同一文件
         let cacheKey = "\(segment.id)-\(segment.languageTag)"
         let url = Self.cacheURL(bookID: bookID, chapterID: chapterID, segmentID: cacheKey, voice: resolved)
         if let cached = try? Data(contentsOf: url), !cached.isEmpty {
             return cached
         }
-        // 离线且无缓存：不调用 Edge，给出明确提示
         if !NetworkReachability.shared.isOnline {
             throw EdgeTTS.TTSError.network("当前无网络，且本章段语音未缓存。请联网后朗读或先「缓存本章语音」。")
         }
-        // 缓存固定用 +0% 合成，播放时用 player.rate
-        let data = try await EdgeTTS.synthesize(
-            text: segment.text,
-            voice: resolved,
-            rate: "+0%"
-        ) {
-            session != self.session
+        // 同 cacheKey 只允许一路 in-flight 合成（预取与播放共享）
+        let dedupeKey = "\(bookID.uuidString)|\(chapterID.uuidString)|\(cacheKey)|\(resolved)"
+        let data = try await TTSInFlight.shared.run(key: dedupeKey) {
+            if let cached = try? Data(contentsOf: url), !cached.isEmpty {
+                return cached
+            }
+            let data = try await EdgeTTS.synthesize(
+                text: segment.text,
+                voice: resolved,
+                rate: "+0%"
+            ) {
+                session != self.session
+            }
+            try? data.write(to: url, options: [.atomic])
+            return data
         }
-        try? data.write(to: url, options: [.atomic])
         return data
     }
 
@@ -412,27 +452,48 @@ final class BookTTSController {
 
 
     /// 全书语音预缓存（按章节顺序，可取消）
+    /// - Parameter fromChapterIndex: 从第几章开始（`BookChapter.index`，含该章）；nil = 从第一章
     func precacheBook(
         book: Book,
         voice: String?,
+        fromChapterIndex: Int? = nil,
         onProgress: (@MainActor (Double, String) -> Void)? = nil
     ) {
         cacheTask?.cancel()
-        let chapters = book.chapters.sorted { $0.index < $1.index }
+        var chapters = book.chapters.sorted { $0.index < $1.index }
+        let startIdx = fromChapterIndex ?? BookJobProgress.loadTTS(bookID: book.id)
+        if let from = startIdx {
+            chapters = chapters.filter { $0.index >= from }
+        }
         guard !chapters.isEmpty else {
             errorMessage = "没有章节可缓存"
             return
         }
+        // 断点：记录任务进度，杀进程后可从该章继续
+        BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: fromChapterIndex ?? chapters.first?.index ?? 0)
         isCaching = true
         cacheProgress = 0
         statusText = "全书语音…"
+        let totalAll = max(book.chapters.count, 1)
         cacheTask = Task {
             let my = session
             let dir = BookLibrary.bookDirectory(id: book.id)
             for (ci, ch) in chapters.enumerated() {
                 if Task.isCancelled || my != session { break }
+                BookJobProgress.saveTTS(bookID: book.id, fromChapterIndex: ch.index)
                 let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
                 let segs = Self.segments(fromHTML: html, chapterID: ch.id)
+                // 已整章缓存则跳过
+                let voiceForStatus = voice ?? "auto"
+                let status = Self.chapterCacheStatus(
+                    bookID: book.id,
+                    chapterID: ch.id,
+                    voice: EdgeTTS.preferredVoice(for: segs.first?.text ?? "a", configured: voice),
+                    segmentIDs: segs.map { "\($0.id)-\($0.languageTag)" }
+                )
+                // chapterCacheStatus 用的 voice 路径需与 audioData 一致；已有文件则 audioData 会命中
+                _ = voiceForStatus
+                _ = status
                 for (si, seg) in segs.enumerated() {
                     if Task.isCancelled || my != session { break }
                     do {
@@ -450,9 +511,10 @@ final class BookTTSController {
                         isCaching = false
                         return
                     }
-                    let frac = (Double(ci) + Double(si + 1) / Double(max(segs.count, 1))) / Double(chapters.count)
+                    let doneChapters = Double(ci) + Double(si + 1) / Double(max(segs.count, 1))
+                    let frac = doneChapters / Double(max(chapters.count, 1))
                     cacheProgress = frac
-                    let msg = "全书语音 第" + String(ci + 1) + "/" + String(chapters.count) + " 章"
+                    let msg = "全书语音 第\(ch.index + 1) 章（\(ci + 1)/\(chapters.count)）"
                     statusText = msg
                     onProgress?(frac, msg)
                 }
@@ -461,8 +523,10 @@ final class BookTTSController {
                 isCaching = false
                 statusText = "全书语音已缓存"
                 cacheProgress = 1
+                BookJobProgress.clearTTS(bookID: book.id)
                 onProgress?(1, "全书语音已缓存")
             }
+            _ = totalAll
         }
     }
 
@@ -497,6 +561,80 @@ final class BookTTSController {
             }
         }
         return total
+    }
+}
+
+// MARK: - TTS in-flight dedupe（同 cacheKey 只合成一次）
+
+private actor TTSInFlight {
+    static let shared = TTSInFlight()
+    private var tasks: [String: Task<Data, Error>] = [:]
+
+    func run(key: String, operation: @escaping @Sendable () async throws -> Data) async throws -> Data {
+        if let existing = tasks[key] {
+            return try await existing.value
+        }
+        let task = Task {
+            try await operation()
+        }
+        tasks[key] = task
+        defer { tasks[key] = nil }
+        return try await task.value
+    }
+}
+
+// MARK: - 全书任务轻量断点（仅记起始章索引，音频/译文仍以文件为准）
+
+enum BookJobProgress {
+    private static var dir: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let url = base.appendingPathComponent("Harbor/BookJobs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private static func url(bookID: UUID, kind: String) -> URL {
+        dir.appendingPathComponent("\(bookID.uuidString)-\(kind).json")
+    }
+
+    struct Snapshot: Codable {
+        var fromChapterIndex: Int
+        var updatedAt: Date
+    }
+
+    static func saveTTS(bookID: UUID, fromChapterIndex: Int) {
+        let s = Snapshot(fromChapterIndex: fromChapterIndex, updatedAt: Date())
+        if let data = try? JSONEncoder().encode(s) {
+            try? data.write(to: url(bookID: bookID, kind: "tts"), options: [.atomic])
+        }
+    }
+
+    static func loadTTS(bookID: UUID) -> Int? {
+        guard let data = try? Data(contentsOf: url(bookID: bookID, kind: "tts")),
+              let s = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
+        return s.fromChapterIndex
+    }
+
+    static func clearTTS(bookID: UUID) {
+        try? FileManager.default.removeItem(at: url(bookID: bookID, kind: "tts"))
+    }
+
+    static func saveTranslate(bookID: UUID, fromChapterIndex: Int) {
+        let s = Snapshot(fromChapterIndex: fromChapterIndex, updatedAt: Date())
+        if let data = try? JSONEncoder().encode(s) {
+            try? data.write(to: url(bookID: bookID, kind: "translate"), options: [.atomic])
+        }
+    }
+
+    static func loadTranslate(bookID: UUID) -> Int? {
+        guard let data = try? Data(contentsOf: url(bookID: bookID, kind: "translate")),
+              let s = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
+        return s.fromChapterIndex
+    }
+
+    static func clearTranslate(bookID: UUID) {
+        try? FileManager.default.removeItem(at: url(bookID: bookID, kind: "translate"))
     }
 }
 

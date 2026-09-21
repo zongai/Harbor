@@ -159,34 +159,41 @@ enum BookTranslationService {
 
 
     /// 全书翻译（按章节，跳过已完成且目标语言相同的缓存）
+    /// - Parameter fromChapterIndex: 从第几章开始（`BookChapter.index`，含该章）；nil = 从第一章或断点
     @MainActor
     static func translateBook(
         book: Book,
         targetLanguage: AppLanguage,
         store: AppStore,
+        fromChapterIndex: Int? = nil,
         onProgress: ((Double, String) -> Void)? = nil
     ) async throws {
-        let chapters = book.chapters.sorted { $0.index < $1.index }
+        var chapters = book.chapters.sorted { $0.index < $1.index }
+        let startIdx = fromChapterIndex ?? BookJobProgress.loadTranslate(bookID: book.id)
+        if let from = startIdx {
+            chapters = chapters.filter { $0.index >= from }
+        }
         guard !chapters.isEmpty else {
             throw TranslationError.apiError("没有章节可翻译")
         }
         let dir = BookLibrary.bookDirectory(id: book.id)
         for (i, ch) in chapters.enumerated() {
             if Task.isCancelled { throw CancellationError() }
+            BookJobProgress.saveTranslate(bookID: book.id, fromChapterIndex: ch.index)
             if let existing = load(bookID: book.id, chapterID: ch.id),
                existing.status == .done,
                existing.targetLanguage == targetLanguage.rawValue,
                !existing.paragraphs.isEmpty {
                 onProgress?(
                     Double(i + 1) / Double(chapters.count),
-                    "跳过已译 " + String(i + 1) + "/" + String(chapters.count)
+                    "跳过已译 第\(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
                 )
                 continue
             }
             let html = EPUBParser.loadChapterHTML(bookDirectory: dir, href: ch.href) ?? ""
             onProgress?(
                 Double(i) / Double(chapters.count),
-                "翻译第 " + String(i + 1) + "/" + String(chapters.count) + " 章"
+                "翻译第 \(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
             )
             _ = try await translateChapter(
                 bookID: book.id,
@@ -198,9 +205,10 @@ enum BookTranslationService {
             )
             onProgress?(
                 Double(i + 1) / Double(chapters.count),
-                "完成 " + String(i + 1) + "/" + String(chapters.count) + " 章"
+                "完成 第\(ch.index + 1) 章（\(i + 1)/\(chapters.count)）"
             )
         }
+        BookJobProgress.clearTranslate(bookID: book.id)
         onProgress?(1, "全书翻译完成")
     }
 
