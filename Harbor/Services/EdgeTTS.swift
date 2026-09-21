@@ -87,9 +87,16 @@ enum EdgeTTS {
 
     static func preferredVoice(for text: String, configured: String?) -> String {
         if let configured, !configured.isEmpty { return configured }
-        if ListLanguageDetect.isMostlyChinese(text) { return defaultChineseVoice }
-        if isMostlyTurkish(text) { return defaultTurkishVoice }
-        return defaultEnglishVoice
+        // 与 BookLanguageDetect 对齐，双语朗读按段选 Voice
+        switch BookLanguageDetect.tag(for: text) {
+        case "zh": return defaultChineseVoice
+        case "ja": return "ja-JP-NanamiNeural"
+        case "ko": return "ko-KR-SunHiNeural"
+        case "tr": return defaultTurkishVoice
+        default:
+            if isMostlyTurkish(text) { return defaultTurkishVoice }
+            return defaultEnglishVoice
+        }
     }
 
     /// 粗判土耳其语：拉丁字母为主且含 ğüşıöç 等特征字母

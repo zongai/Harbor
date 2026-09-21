@@ -180,10 +180,12 @@ struct BookReaderView: View {
                 Button {
                     guard let ch = currentChapter else { return }
                     bookTTS.playbackRate = ttsRate
-                    bookTTS.toggleChapter(
+                    bookTTS.toggleContent(
                         bookID: bookID,
                         chapterID: ch.id,
+                        mode: readingMode,
                         html: chapterHTML,
+                        translation: chapterTranslation,
                         voice: store.ttsVoice.isEmpty ? nil : store.ttsVoice,
                         rate: ttsRate
                     )

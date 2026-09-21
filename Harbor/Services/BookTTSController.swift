@@ -32,7 +32,10 @@ final class BookTTSController {
     struct Segment: Identifiable {
         let id: String
         let text: String
-        let languageHint: String?
+        /// 缓存与语种键：en / zh / ja / ko / tr / auto
+        let languageTag: String
+        /// 双语时强制按文本选 Voice，忽略用户单一默认 Voice
+        let autoVoice: Bool
     }
 
     // MARK: - Cache paths
@@ -103,7 +106,12 @@ final class BookTTSController {
             for chunk in chunkText(text, maxChars: 450) {
                 idx += 1
                 let id = String(format: "%04d", idx)
-                result.append(Segment(id: id, text: chunk, languageHint: nil))
+                result.append(Segment(
+                    id: id,
+                    text: chunk,
+                    languageTag: BookLanguageDetect.tag(for: chunk),
+                    autoVoice: false
+                ))
             }
         }
         return result
@@ -151,20 +159,106 @@ final class BookTTSController {
         voice: String?,
         rate: Double
     ) {
+        toggleContent(
+            bookID: bookID,
+            chapterID: chapterID,
+            mode: .original,
+            html: html,
+            translation: nil,
+            voice: voice,
+            rate: rate
+        )
+    }
+
+    /// 按阅读模式组队列：双语则原文段 + 译文段交替，并按语种选 Voice
+    func toggleContent(
+        bookID: UUID,
+        chapterID: UUID,
+        mode: BookReadingMode,
+        html: String,
+        translation: BookChapterTranslation?,
+        voice: String?,
+        rate: Double
+    ) {
         if isPlaying || isLoading {
             stop()
             return
         }
         playbackRate = rate
-        let segs = Self.segments(fromHTML: html, chapterID: chapterID)
+        let segs = Self.buildSegments(
+            mode: mode,
+            html: html,
+            translation: translation,
+            chapterID: chapterID
+        )
         guard !segs.isEmpty else {
-            errorMessage = "本章没有可朗读的文本"
+            errorMessage = mode == .translation && translation == nil
+                ? "请先翻译本章再朗读译文"
+                : "没有可朗读的文本"
             return
         }
         queue = segs
         segmentCount = segs.count
         segmentIndex = 0
         playTask = Task { await runQueue(bookID: bookID, chapterID: chapterID, voice: voice) }
+    }
+
+    static func buildSegments(
+        mode: BookReadingMode,
+        html: String,
+        translation: BookChapterTranslation?,
+        chapterID: UUID
+    ) -> [Segment] {
+        switch mode {
+        case .original:
+            return segments(fromHTML: html, chapterID: chapterID)
+        case .translation:
+            guard let tr = translation, !tr.paragraphs.isEmpty else { return [] }
+            var out: [Segment] = []
+            for (i, p) in tr.paragraphs.enumerated() {
+                let text = p.translated.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                for (j, chunk) in chunkText(text, maxChars: 450).enumerated() {
+                    out.append(Segment(
+                        id: String(format: "t-%03d-%02d", i + 1, j + 1),
+                        text: chunk,
+                        languageTag: BookLanguageDetect.tag(for: chunk),
+                        autoVoice: true
+                    ))
+                }
+            }
+            return out
+        case .bilingual:
+            if let tr = translation, !tr.paragraphs.isEmpty {
+                var out: [Segment] = []
+                for (i, p) in tr.paragraphs.enumerated() {
+                    let o = p.original.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trn = p.translated.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !o.isEmpty {
+                        for (j, chunk) in chunkText(o, maxChars: 450).enumerated() {
+                            out.append(Segment(
+                                id: String(format: "b-%03d-o%02d", i + 1, j + 1),
+                                text: chunk,
+                                languageTag: BookLanguageDetect.tag(for: chunk),
+                                autoVoice: true
+                            ))
+                        }
+                    }
+                    if !trn.isEmpty {
+                        for (j, chunk) in chunkText(trn, maxChars: 450).enumerated() {
+                            out.append(Segment(
+                                id: String(format: "b-%03d-t%02d", i + 1, j + 1),
+                                text: chunk,
+                                languageTag: BookLanguageDetect.tag(for: chunk),
+                                autoVoice: true
+                            ))
+                        }
+                    }
+                }
+                return out
+            }
+            return segments(fromHTML: html, chapterID: chapterID)
+        }
     }
 
     private func runQueue(bookID: UUID, chapterID: UUID, voice: String?) async {
@@ -239,8 +333,11 @@ final class BookTTSController {
         voice: String?,
         session: Int
     ) async throws -> Data {
-        let resolved = EdgeTTS.preferredVoice(for: segment.text, configured: voice)
-        let url = Self.cacheURL(bookID: bookID, chapterID: chapterID, segmentID: segment.id, voice: resolved)
+        let configured = segment.autoVoice ? nil : voice
+        let resolved = EdgeTTS.preferredVoice(for: segment.text, configured: configured)
+        // 缓存键含语种，避免中英共用同一文件
+        let cacheKey = "\(segment.id)-\(segment.languageTag)"
+        let url = Self.cacheURL(bookID: bookID, chapterID: chapterID, segmentID: cacheKey, voice: resolved)
         if let cached = try? Data(contentsOf: url), !cached.isEmpty {
             return cached
         }
@@ -303,5 +400,23 @@ final class BookTTSController {
     static func clearBookCache(bookID: UUID) {
         let dir = rootURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
+    }
+}
+
+
+/// 书籍段落语种粗检（用于 TTS Voice；与 ListLanguageDetect 互补）
+enum BookLanguageDetect {
+    static func tag(for text: String) -> String {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return "auto" }
+        if ListLanguageDetect.isMostlyChinese(s) { return "zh" }
+        // 日文假名
+        if s.unicodeScalars.contains(where: { (0x3040...0x30FF).contains($0.value) }) { return "ja" }
+        // 韩文
+        if s.unicodeScalars.contains(where: { (0xAC00...0xD7AF).contains($0.value) }) { return "ko" }
+        // 土耳其特征
+        let tr: Set<Character> = Set("ğüşıöçĞÜŞİÖÇ")
+        if s.filter({ tr.contains($0) }).count >= 2 { return "tr" }
+        return "en"
     }
 }
