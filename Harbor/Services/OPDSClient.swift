@@ -7,12 +7,50 @@ struct OPDSCatalog: Identifiable, Codable, Hashable, Sendable {
     var title: String
     var url: String
     var addedAt: Date
+    /// 可选 HTTP Basic 用户名；密码存 Keychain，不进 JSON
+    var username: String?
 
-    init(id: UUID = UUID(), title: String, url: String, addedAt: Date = Date()) {
+    init(
+        id: UUID = UUID(),
+        title: String,
+        url: String,
+        addedAt: Date = Date(),
+        username: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.url = url
         self.addedAt = addedAt
+        self.username = username
+    }
+
+    var hasCredentials: Bool {
+        !(username ?? "").isEmpty
+    }
+}
+
+enum OPDSCredentialStore {
+    private static func key(_ catalogID: UUID) -> String {
+        "opds_password_\(catalogID.uuidString)"
+    }
+
+    static func savePassword(_ password: String?, catalogID: UUID) {
+        let k = key(catalogID)
+        let p = password?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if p.isEmpty {
+            Keychain.delete(key: k)
+        } else {
+            Keychain.save(key: k, value: p)
+        }
+    }
+
+    static func password(catalogID: UUID) -> String? {
+        let p = Keychain.load(key: key(catalogID))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return p.isEmpty ? nil : p
+    }
+
+    static func delete(catalogID: UUID) {
+        Keychain.delete(key: key(catalogID))
     }
 }
 
@@ -59,10 +97,12 @@ enum OPDSError: LocalizedError {
     case noEPUB
     case cancelled
     case download(String)
+    case unauthorized
 
     var errorDescription: String? {
         switch self {
         case .badURL: return "OPDS 地址无效"
+        case .unauthorized: return "认证失败，请检查用户名和密码"
         case .http(let c): return "OPDS 服务器错误 HTTP \(c)"
         case .parse(let s): return "OPDS 解析失败：\(s)"
         case .noEPUB: return "该条目没有 EPUB 下载链接"
@@ -83,7 +123,11 @@ enum OPDSClient {
         return URLSession(configuration: cfg)
     }()
 
-    static func fetchFeed(from urlString: String) async throws -> OPDSFeed {
+    static func fetchFeed(
+        from urlString: String,
+        username: String? = nil,
+        password: String? = nil
+    ) async throws -> OPDSFeed {
         guard let url = NetworkURLPolicy.validate(urlString) else { throw OPDSError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 20)
         req.setValue(
@@ -94,9 +138,15 @@ enum OPDSClient {
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 HarborOPDS/1.0",
             forHTTPHeaderField: "User-Agent"
         )
+        applyBasicAuth(to: &req, username: username, password: password)
         let (data, response) = try await session.data(for: req)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw OPDSError.http(http.statusCode)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw OPDSError.unauthorized
+            }
+            if !(200...299).contains(http.statusCode) {
+                throw OPDSError.http(http.statusCode)
+            }
         }
         guard let xml = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .isoLatin1) else {
@@ -112,16 +162,24 @@ enum OPDSClient {
     /// 下载到临时文件，返回本地 URL
     static func downloadEPUB(
         from urlString: String,
+        username: String? = nil,
+        password: String? = nil,
         progress: (@Sendable (Double) -> Void)? = nil,
         isCancelled: (() -> Bool)? = nil
     ) async throws -> URL {
         guard let url = NetworkURLPolicy.validate(urlString) else { throw OPDSError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.setValue("application/epub+zip, application/octet-stream, */*;q=0.5", forHTTPHeaderField: "Accept")
+        applyBasicAuth(to: &req, username: username, password: password)
 
         let (bytes, response) = try await session.bytes(for: req)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw OPDSError.http(http.statusCode)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw OPDSError.unauthorized
+            }
+            if !(200...299).contains(http.statusCode) {
+                throw OPDSError.http(http.statusCode)
+            }
         }
         let total = response.expectedContentLength
         let tmp = FileManager.default.temporaryDirectory
@@ -162,6 +220,14 @@ enum OPDSClient {
             throw OPDSError.download("下载内容不是有效的 EPUB/ZIP")
         }
         return tmp
+    }
+
+    private static func applyBasicAuth(to request: inout URLRequest, username: String?, password: String?) {
+        let user = username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !user.isEmpty else { return }
+        let pass = password ?? ""
+        let token = Data("\(user):\(pass)".utf8).base64EncodedString()
+        request.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
     }
 
     // MARK: - Atom OPDS 1.x

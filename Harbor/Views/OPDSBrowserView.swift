@@ -7,6 +7,8 @@ struct OPDSBrowserView: View {
 
     let rootTitle: String
     let rootURL: String
+    var username: String? = nil
+    var password: String? = nil
 
     @State private var path: [String] = []
     @State private var feed: OPDSFeed?
@@ -71,7 +73,12 @@ struct OPDSBrowserView: View {
     private func entryRow(_ entry: OPDSEntry) -> some View {
         if entry.isNavigation, let nav = entry.navigationURL {
             NavigationLink(entry.title) {
-                OPDSBrowserView(rootTitle: entry.title, rootURL: nav)
+                OPDSBrowserView(
+                    rootTitle: entry.title,
+                    rootURL: nav,
+                    username: username,
+                    password: password
+                )
             }
         } else {
             VStack(alignment: .leading, spacing: 6) {
@@ -118,7 +125,11 @@ struct OPDSBrowserView: View {
         isLoading = true
         errorMessage = nil
         do {
-            let f = try await OPDSClient.fetchFeed(from: url)
+            let f = try await OPDSClient.fetchFeed(
+                from: url,
+                username: username,
+                password: password
+            )
             if append, var existing = feed {
                 existing.entries.append(contentsOf: f.entries)
                 existing.nextURL = f.nextURL
@@ -152,11 +163,17 @@ struct OPDSBrowserView: View {
         downloadTask?.cancel()
         downloadTask = Task {
             do {
-                let file = try await OPDSClient.downloadEPUB(from: href, progress: { p in
-                    Task { @MainActor in
-                        downloadProgress = p
-                    }
-                }, isCancelled: { Task.isCancelled })
+                let file = try await OPDSClient.downloadEPUB(
+                    from: href,
+                    username: username,
+                    password: password,
+                    progress: { p in
+                        Task { @MainActor in
+                            downloadProgress = p
+                        }
+                    },
+                    isCancelled: { Task.isCancelled }
+                )
                 statusMessage = "正在导入书架…"
                 _ = try await library.importEPUB(from: file)
                 try? FileManager.default.removeItem(at: file)
@@ -180,6 +197,8 @@ struct AddOPDSCatalogView: View {
 
     @State private var title = ""
     @State private var url = ""
+    @State private var username = ""
+    @State private var password = ""
     @State private var testing = false
     @State private var testMessage: String?
 
@@ -192,7 +211,17 @@ struct AddOPDSCatalogView: View {
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
             } footer: {
-                Text("示例：公开 OPDS 书库的 Atom 目录地址。")
+                Text("示例：公开或私有 OPDS 书库的 Atom 目录地址。")
+            }
+            Section {
+                TextField("用户名（可选）", text: $username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("密码（可选）", text: $password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } footer: {
+                Text("使用 HTTP Basic 认证。密码保存在系统钥匙串，不会写入书库列表文件。")
             }
             if let testMessage {
                 Section {
@@ -222,10 +251,21 @@ struct AddOPDSCatalogView: View {
         testing = true
         testMessage = nil
         let u = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pass = password
         do {
-            let feed = try await OPDSClient.fetchFeed(from: u)
+            let feed = try await OPDSClient.fetchFeed(
+                from: u,
+                username: user.isEmpty ? nil : user,
+                password: user.isEmpty ? nil : pass
+            )
             let name = title.isEmpty ? feed.title : title
-            catalogs.add(title: name, url: u)
+            catalogs.add(
+                title: name,
+                url: u,
+                username: user.isEmpty ? nil : user,
+                password: user.isEmpty ? nil : pass
+            )
             testMessage = "已添加：\(feed.title)（\(feed.entries.count) 条）"
             dismiss()
         } catch {

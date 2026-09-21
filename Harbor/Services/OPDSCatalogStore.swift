@@ -32,18 +32,38 @@ final class OPDSCatalogStore {
         }
     }
 
-    func add(title: String, url: String) {
+    func add(title: String, url: String, username: String? = nil, password: String? = nil) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard NetworkURLPolicy.validate(trimmed) != nil else { return }
         if catalogs.contains(where: { $0.url == trimmed }) { return }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        catalogs.insert(OPDSCatalog(title: name.isEmpty ? (URL(string: trimmed)?.host ?? "OPDS") : name, url: trimmed), at: 0)
+        let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let catalog = OPDSCatalog(
+            title: name.isEmpty ? (URL(string: trimmed)?.host ?? "OPDS") : name,
+            url: trimmed,
+            username: (user?.isEmpty == false) ? user : nil
+        )
+        OPDSCredentialStore.savePassword(password, catalogID: catalog.id)
+        catalogs.insert(catalog, at: 0)
+        save()
+    }
+
+    func updateCredentials(id: UUID, username: String?, password: String?) {
+        guard let i = catalogs.firstIndex(where: { $0.id == id }) else { return }
+        let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
+        catalogs[i].username = (user?.isEmpty == false) ? user : nil
+        OPDSCredentialStore.savePassword(password, catalogID: id)
         save()
     }
 
     func remove(id: UUID) {
+        OPDSCredentialStore.delete(catalogID: id)
         catalogs.removeAll { $0.id == id }
         save()
+    }
+
+    func credentials(for catalog: OPDSCatalog) -> (String?, String?) {
+        (catalog.username, OPDSCredentialStore.password(catalogID: catalog.id))
     }
 
     func rename(id: UUID, title: String) {

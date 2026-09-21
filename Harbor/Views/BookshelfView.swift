@@ -58,11 +58,23 @@ struct BookshelfView: View {
                 Section("OPDS") {
                     ForEach(opdsCatalogs.catalogs) { cat in
                         NavigationLink {
-                            OPDSBrowserView(rootTitle: cat.title, rootURL: cat.url)
+                            OPDSBrowserView(
+                                rootTitle: cat.title,
+                                rootURL: cat.url,
+                                username: cat.username,
+                                password: OPDSCredentialStore.password(catalogID: cat.id)
+                            )
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(cat.title)
-                                    .font(AppTypography.listTitle())
+                                HStack {
+                                    Text(cat.title)
+                                        .font(AppTypography.listTitle())
+                                    if cat.hasCredentials {
+                                        Image(systemName: "lock.fill")
+                                            .font(.caption2)
+                                            .foregroundStyle(theme.muted)
+                                    }
+                                }
                                 Text(cat.url)
                                     .font(AppTypography.caption())
                                     .foregroundStyle(theme.muted)
