@@ -152,8 +152,8 @@ struct ArticleContentView: View {
         let source = html
         let preferCN = prefersChineseTypography
         let title = articleTitle
-        // 短文同步解析（首屏无闪白）；长文后台解析避免阻塞滚动/进页
-        if source.count < 12_000 {
+        // 短文同步；中长文后台解析，避免原文/译文切换时主线程卡顿（切换期间保留旧 blocks）
+        if source.count < 4_000 {
             cachedBlocks = ContentBlockParser.parse(
                 source,
                 prefersChineseTypography: preferCN,
@@ -162,6 +162,7 @@ struct ArticleContentView: View {
             cachedParseKey = key
             return
         }
+        let captureKey = key
         Task.detached(priority: .userInitiated) {
             let blocks = ContentBlockParser.parse(
                 source,
@@ -169,10 +170,13 @@ struct ArticleContentView: View {
                 articleTitle: title
             )
             await MainActor.run {
-                // 若期间 html 已变，丢弃过期结果
-                guard key == parseKey else { return }
-                cachedBlocks = blocks
-                cachedParseKey = key
+                guard captureKey == parseKey else { return }
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) {
+                    cachedBlocks = blocks
+                    cachedParseKey = captureKey
+                }
             }
         }
     }

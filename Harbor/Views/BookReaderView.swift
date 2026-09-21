@@ -25,6 +25,10 @@ struct BookReaderView: View {
     @State private var chapterTranslation: BookChapterTranslation?
     @State private var isTranslatingChapter = false
     @State private var translationProgressText: String?
+    /// 预生成三种阅读 HTML，切换模式时只换引用、避免重复拼串
+    @State private var cachedHTMLOriginal: String = ""
+    @State private var cachedHTMLTranslation: String = ""
+    @State private var cachedHTMLBilingual: String = ""
     /// 左右滑翻章：累计水平位移，避免与垂直滚动冲突
     @State private var chapterSwipeX: CGFloat = 0
     /// 当前章内滚动比例 0...1
@@ -192,7 +196,12 @@ struct BookReaderView: View {
                 Menu {
                     ForEach(BookReadingMode.allCases) { mode in
                         Button {
-                            readingMode = mode
+                            // 无动画切换，减少布局动画卡顿
+                            var t = Transaction()
+                            t.disablesAnimations = true
+                            withTransaction(t) {
+                                readingMode = mode
+                            }
                         } label: {
                             HStack {
                                 Text(mode.title)
@@ -201,6 +210,7 @@ struct BookReaderView: View {
                                 }
                             }
                         }
+                        .disabled(mode != .original && cachedHTMLTranslation.isEmpty && chapterTranslation?.status != .done)
                     }
                     Divider()
                     Button {
@@ -382,22 +392,48 @@ struct BookReaderView: View {
     }
 
 
+    /// 仅章节变化时重置视图身份；模式切换不 destroy ArticleContentView
     private var contentViewID: String {
-        let mode = readingMode.rawValue
-        let ch = currentChapter?.id.uuidString ?? ""
-        let ts = chapterTranslation?.updatedAt.timeIntervalSince1970 ?? 0
-        return "\(mode)-\(ch)-\(ts)"
+        currentChapter?.id.uuidString ?? bookID.uuidString
     }
 
     private var displayHTML: String {
-
         switch readingMode {
         case .original:
-            return chapterHTML
+            return cachedHTMLOriginal.isEmpty ? chapterHTML : cachedHTMLOriginal
         case .translation:
-            return chapterTranslation?.translationHTML ?? ""
+            return cachedHTMLTranslation
         case .bilingual:
-            return chapterTranslation?.bilingualHTML ?? chapterHTML
+            return cachedHTMLBilingual.isEmpty ? cachedHTMLOriginal : cachedHTMLBilingual
+        }
+    }
+
+    /// 章节 HTML / 译文变更时重建三种缓存（后台拼双语串，避免主线程卡一下）
+    private func rebuildHTMLCaches() {
+        let original = chapterHTML
+        cachedHTMLOriginal = original
+        guard let tr = chapterTranslation, tr.status == .done, !tr.paragraphs.isEmpty else {
+            cachedHTMLTranslation = ""
+            cachedHTMLBilingual = ""
+            return
+        }
+        // 短章同步；长章后台生成，生成前先占位避免空切
+        if tr.paragraphs.count < 40 {
+            cachedHTMLTranslation = tr.translationHTML
+            cachedHTMLBilingual = tr.bilingualHTML
+            return
+        }
+        cachedHTMLTranslation = tr.translationHTML
+        let snapshot = tr
+        Task.detached(priority: .userInitiated) {
+            let bi = snapshot.bilingualHTML
+            await MainActor.run {
+                // 仍是同一章译文再写入
+                if chapterTranslation?.chapterID == snapshot.chapterID,
+                   chapterTranslation?.updatedAt == snapshot.updatedAt {
+                    cachedHTMLBilingual = bi
+                }
+            }
         }
     }
 
@@ -421,9 +457,11 @@ struct BookReaderView: View {
     private func loadTranslationIfNeeded() {
         guard let ch = currentChapter else {
             chapterTranslation = nil
+            rebuildHTMLCaches()
             return
         }
         chapterTranslation = BookTranslationService.load(bookID: bookID, chapterID: ch.id)
+        rebuildHTMLCaches()
     }
 
     private func translateCurrentChapter() async {
@@ -444,8 +482,13 @@ struct BookReaderView: View {
                 }
             }
             chapterTranslation = result
+            rebuildHTMLCaches()
             if readingMode == .original {
-                readingMode = .bilingual
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) {
+                    readingMode = .bilingual
+                }
             }
         } catch {
             loadError = error.localizedDescription
@@ -643,7 +686,9 @@ private struct BookReaderBodyContent: View {
                 prefersChineseTypography: prefersChinese,
                 articleTitle: articleTitle
             )
+            // 仅按章节稳定身份；模式切换走 html/parseKey，避免整树销毁重建
             .id(contentID)
+            .transaction { $0.animation = nil }
         }
     }
 
