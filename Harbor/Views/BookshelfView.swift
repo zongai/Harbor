@@ -15,7 +15,7 @@ struct BookshelfView: View {
         library.books
             .filter { $0.lastReadDate != nil }
             .sorted { ($0.lastReadDate ?? .distantPast) > ($1.lastReadDate ?? .distantPast) }
-            .prefix(8)
+            .prefix(3)
             .map { $0 }
     }
 
@@ -91,12 +91,12 @@ struct BookshelfView: View {
                             }
                         }
                     }
-                    Button {
-                        showAddOPDS = true
-                    } label: {
-                        Label("添加 OPDS 书库", systemImage: "plus.circle")
+                    if opdsCatalogs.catalogs.isEmpty {
+                        Text("点右上角 + 可添加 OPDS 书库或导入 EPUB")
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.muted)
+                            .listRowBackground(Color.clear)
                     }
-                    .listRowBackground(Color.clear)
                 }
             }
             .listStyle(.insetGrouped)
@@ -108,13 +108,23 @@ struct BookshelfView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showImporter = true
+                    Menu {
+                        Button {
+                            showImporter = true
+                        } label: {
+                            Label("导入 EPUB", systemImage: "doc.badge.plus")
+                        }
+                        .disabled(library.isImporting)
+                        Button {
+                            showAddOPDS = true
+                        } label: {
+                            Label("添加 OPDS 书库", systemImage: "server.rack")
+                        }
                     } label: {
-                        Label("导入 EPUB", systemImage: "plus")
+                        Label("添加", systemImage: "plus")
                     }
                     .labelStyle(.iconOnly)
-                    .disabled(library.isImporting)
+                    .accessibilityLabel("添加书籍或 OPDS")
                 }
             }
             .overlay {
