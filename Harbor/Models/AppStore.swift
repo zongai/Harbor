@@ -771,6 +771,9 @@ class AppStore: AIService.Runtime {
 
     struct SettingsExportPayload: Codable {
         var version: Int
+        /// v6+：完整偏好快照（与本地 PersistedAppSettings 同构；新增设置自动覆盖）
+        var settings: PersistedAppSettings?
+        // —— 以下为 v1–v5 扁平字段，继续写出以兼容旧导入；新字段以 settings 为准 ——
         var fontSize: Double
         var listTitleFontSize: Double
         var listSummaryFontSize: Double
@@ -786,7 +789,6 @@ class AppStore: AIService.Runtime {
         var explainPrompt: String
         var readRetentionDays: Int
         var fullContentCacheDays: Int
-        /// 以下可选：旧备份无字段时保持导入端现状
         var fullContentURLPrefixEnabled: Bool?
         var fullContentURLPrefix: String?
         var feedSortMode: String?
@@ -820,11 +822,9 @@ class AppStore: AIService.Runtime {
         var aiProviders: [AIProvider]
         var translationKeys: [String: String]?
         var aiKeys: [String: String]?
-        /// 书籍阅读偏好（v5+）
         var bookDefaultReadingMode: String?
         var bookTTSRate: Double?
         var bookAutoLanguageVoice: Bool?
-        /// 分组与源级开关（全文/评论/自动翻译/URL 前缀等）
         var groups: [GroupSettingsSnapshot]?
         var feeds: [FeedSettingsSnapshot]?
     }
@@ -847,8 +847,10 @@ class AppStore: AIService.Runtime {
         let groupSnaps: [GroupSettingsSnapshot] = groups.map {
             GroupSettingsSnapshot(name: $0.name, sortOrder: $0.sortOrder)
         }
+        let snap = makePersistedSettings()
         let payload = SettingsExportPayload(
-            version: 5,
+            version: 6,
+            settings: snap,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
             listSummaryFontSize: listSummaryFontSize,
@@ -916,6 +918,39 @@ class AppStore: AIService.Runtime {
 
     func importSettingsJSON(_ data: Data) throws {
         let payload = try JSONDecoder().decode(SettingsExportPayload.self, from: data)
+        // v6+：整包偏好快照优先（覆盖所有已注册设置，含日后新增字段）
+        if let snap = payload.settings {
+            applyPersistedSettings(snap)
+        } else {
+            applyLegacyFlatSettingsExport(payload)
+        }
+        // API Key 与源级开关在快照外，始终按 payload 合并
+        for (k, v) in (payload.translationKeys ?? [:]) where !v.isEmpty {
+            if k == "deepl_translate_key" {
+                let parts = v.components(separatedBy: CharacterSet.newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                saveDeepLKeys(parts.isEmpty ? [v] : parts)
+            } else {
+                Keychain.save(key: k, value: v)
+            }
+        }
+        for (idStr, v) in (payload.aiKeys ?? [:]) where !v.isEmpty {
+            guard let uuid = UUID(uuidString: idStr) else { continue }
+            let parts = v.components(separatedBy: CharacterSet.newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            saveAIKeys(for: uuid, keys: parts.isEmpty ? [v] : parts)
+        }
+        applyImportedFeedAndGroupSettings(
+            groups: payload.groups ?? [],
+            feeds: payload.feeds ?? []
+        )
+        saveToStorage()
+    }
+
+    /// v5 及更早扁平备份
+    private func applyLegacyFlatSettingsExport(_ payload: SettingsExportPayload) {
         fontSize = payload.fontSize
         listTitleFontSize = payload.listTitleFontSize
         listSummaryFontSize = payload.listSummaryFontSize
@@ -987,7 +1022,6 @@ class AppStore: AIService.Runtime {
         }
         if let r = payload.bookTTSRate {
             settings.bookTTSRate = min(2.0, max(0.5, r))
-            // 与默认朗读语速对齐
             ttsRate = settings.bookTTSRate
         }
         if let v = payload.bookAutoLanguageVoice {
@@ -1013,31 +1047,9 @@ class AppStore: AIService.Runtime {
         defaultExplainProviderID = payload.defaultExplainProviderID
         aiBlacklistFallbackProviderID = payload.aiBlacklistFallbackProviderID
         if !payload.aiProviders.isEmpty { aiProviders = payload.aiProviders }
-        for (k, v) in (payload.translationKeys ?? [:]) where !v.isEmpty {
-            if k == "deepl_translate_key" {
-                let parts = v.components(separatedBy: CharacterSet.newlines)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                saveDeepLKeys(parts.isEmpty ? [v] : parts)
-            } else {
-                Keychain.save(key: k, value: v)
-            }
-        }
-        for (idStr, v) in (payload.aiKeys ?? [:]) where !v.isEmpty {
-            guard let uuid = UUID(uuidString: idStr) else { continue }
-            let parts = v.components(separatedBy: CharacterSet.newlines)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            saveAIKeys(for: uuid, keys: parts.isEmpty ? [v] : parts)
-        }
         if let sortRaw = payload.feedSortMode, let sort = FeedSortMode(rawValue: sortRaw) {
             feedSortMode = sort
         }
-        applyImportedFeedAndGroupSettings(
-            groups: payload.groups ?? [],
-            feeds: payload.feeds ?? []
-        )
-        saveToStorage()
     }
 
     /// 将备份中的分组与源级开关合并到当前订阅（按 URL / 分组名匹配，不删已有源）

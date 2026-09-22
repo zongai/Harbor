@@ -1,6 +1,8 @@
 import Foundation
 
 /// 用户偏好持久化（不含订阅源与已读链接；那些在 FeedRepository）
+/// 约定：新增「可配置设置」必须加到本结构，并在 `makePersistedSettings` / `applyPersistedSettings` 同步；
+/// 设置备份会整包导出本快照，避免漏字段。
 struct PersistedAppSettings: Codable {
     var fontSize: Double = 17
     var listTitleFontSize: Double = 18
