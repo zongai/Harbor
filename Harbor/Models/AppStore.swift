@@ -820,6 +820,10 @@ class AppStore: AIService.Runtime {
         var aiProviders: [AIProvider]
         var translationKeys: [String: String]?
         var aiKeys: [String: String]?
+        /// 书籍阅读偏好（v5+）
+        var bookDefaultReadingMode: String?
+        var bookTTSRate: Double?
+        var bookAutoLanguageVoice: Bool?
         /// 分组与源级开关（全文/评论/自动翻译/URL 前缀等）
         var groups: [GroupSettingsSnapshot]?
         var feeds: [FeedSettingsSnapshot]?
@@ -844,7 +848,7 @@ class AppStore: AIService.Runtime {
             GroupSettingsSnapshot(name: $0.name, sortOrder: $0.sortOrder)
         }
         let payload = SettingsExportPayload(
-            version: 4,
+            version: 5,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
             listSummaryFontSize: listSummaryFontSize,
@@ -901,6 +905,9 @@ class AppStore: AIService.Runtime {
                 guard !keys.isEmpty else { return nil }
                 return (p.id.uuidString, keys.joined(separator: "\n"))
             }) : nil,
+            bookDefaultReadingMode: settings.bookDefaultReadingMode,
+            bookTTSRate: settings.bookTTSRate,
+            bookAutoLanguageVoice: settings.bookAutoLanguageVoice,
             groups: groupSnaps,
             feeds: feedSnaps
         )
@@ -971,7 +978,21 @@ class AppStore: AIService.Runtime {
         if let w = payload.interestWeights { interestWeights = w }
         if let id = payload.defaultChatProviderID { defaultChatProviderID = id }
         ttsVoice = payload.ttsVoice
-        if let r = payload.ttsRate { ttsRate = min(2.0, max(0.5, r)) }
+        if let r = payload.ttsRate {
+            ttsRate = min(2.0, max(0.5, r))
+            settings.bookTTSRate = ttsRate
+        }
+        if let mode = payload.bookDefaultReadingMode, !mode.isEmpty {
+            settings.bookDefaultReadingMode = mode
+        }
+        if let r = payload.bookTTSRate {
+            settings.bookTTSRate = min(2.0, max(0.5, r))
+            // 与默认朗读语速对齐
+            ttsRate = settings.bookTTSRate
+        }
+        if let v = payload.bookAutoLanguageVoice {
+            settings.bookAutoLanguageVoice = v
+        }
         if let th = ReadingTheme(rawValue: payload.colorTheme) {
             colorTheme = th
         } else {
