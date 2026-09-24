@@ -20,20 +20,15 @@ struct TranslationSettingsView: View {
         @Bindable var store = store
         Form {
             Section {
-                Picker("翻译目标语言", selection: $settings.targetLanguage) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(lang.displayName).tag(lang)
-                    }
-                }
-                Picker("AI 输出语言", selection: $settings.aiOutputLanguage) {
+                Picker("目标语言", selection: $settings.targetLanguage) {
                     ForEach(AppLanguage.allCases) { lang in
                         Text(lang.displayName).tag(lang)
                     }
                 }
             } header: {
-                Text("语言")
+                Text("目标语言")
             } footer: {
-                Text("翻译引擎将内容译为「翻译目标语言」；摘要/解释使用「AI 输出语言」。目标为简体/繁体时，若正文是另一侧中文，会自动做繁简转换（不跳过）。")
+                Text("翻译引擎将内容译为目标语言。摘要/解释的输出语言在「AI → 功能默认」中配置。目标为简体/繁体时，若正文是另一侧中文，会自动做繁简转换。")
             }
 
             Section {
@@ -195,18 +190,22 @@ struct TranslationSettingsView: View {
             // AI
             Section {
                 engineHeader("AI 翻译", selected: store.translationEngineChain.first == .ai)
-                Text("在「AI 设置」中配置 Provider 与 Key，可对单个 Provider 左滑测试。")
+                Text("在「AI → AI 服务商」中配置 Provider 与 Key，可对单个 Provider 左滑「测试连接」。")
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                 testButton(for: .ai)
             } header: { Text("AI 翻译") }
 
             if let testMessage {
                 Section {
-                    Text(testMessage)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(testIsError ? .red : .primary)
-                        .textSelection(.enabled)
-                } header: { Text("测试结果（含 Key 可用性）") }
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: testIsError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(testIsError ? Color.red : Color.green)
+                        Text(testMessage)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(testIsError ? Color.red : Color.secondary)
+                            .textSelection(.enabled)
+                    }
+                } header: { Text("测试连接结果") }
             }
         }
         .navigationTitle("翻译设置")
@@ -319,7 +318,7 @@ struct TranslationSettingsView: View {
                     ProgressView().scaleEffect(0.85)
                     Text("测试中…")
                 } else {
-                    Label("测试此引擎", systemImage: "network")
+                    Label("测试连接", systemImage: "network")
                 }
                 Spacer()
             }

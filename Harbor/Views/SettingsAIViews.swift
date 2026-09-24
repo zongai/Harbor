@@ -11,6 +11,7 @@ struct AISettingsView: View {
         @Bindable var settings = store.settings
         @Bindable var store = store
         Form {
+            // MARK: AI 服务商
             Section {
                 ForEach(store.aiProviders) { provider in
                     Button {
@@ -24,9 +25,15 @@ struct AISettingsView: View {
                                     Text("测试中…").font(.caption).foregroundStyle(.secondary)
                                 }
                             } else if let result = providerTestResults[provider.id] {
-                                Text(result)
-                                    .font(.caption)
-                                    .foregroundStyle(result.hasPrefix("失败") ? .red : .secondary)
+                                let failed = result.hasPrefix("失败") || result.contains("不可用") || result.contains("未配置")
+                                HStack(alignment: .top, spacing: 4) {
+                                    Image(systemName: failed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(failed ? Color.red : Color.green)
+                                    Text(result)
+                                        .font(.caption)
+                                        .foregroundStyle(failed ? Color.red : Color.secondary)
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -34,47 +41,66 @@ struct AISettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("编辑 Provider")
-                        .swipeActions(edge: .leading) {
-                            Button {
-                                Task { await testProvider(provider) }
-                            } label: {
-                                Label("测试", systemImage: "network")
-                            }
-                            .tint(.blue)
-                            .disabled(testingProviderID != nil)
+                    .swipeActions(edge: .leading) {
+                        Button {
+                            Task { await testProvider(provider) }
+                        } label: {
+                            Label("测试连接", systemImage: "network")
                         }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                store.aiProviders.removeAll(where: { $0.id == provider.id })
-                                if store.aiBlacklistFallbackProviderID == provider.id {
-                                    store.aiBlacklistFallbackProviderID = nil
-                                }
-                                if store.defaultExplainProviderID == provider.id {
-                                    store.defaultExplainProviderID = nil
-                                }
-                                if store.defaultSummaryProviderID == provider.id {
-                                    store.defaultSummaryProviderID = store.aiProviders.first?.id
-                                }
-                                if store.defaultTranslationProviderID == provider.id {
-                                    store.defaultTranslationProviderID = store.aiProviders.first?.id
-                                }
-                                store.persistSettings()
-                            } label: {
-                                Label("删除", systemImage: "trash")
+                        .tint(.blue)
+                        .disabled(testingProviderID != nil)
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            store.aiProviders.removeAll(where: { $0.id == provider.id })
+                            if store.aiBlacklistFallbackProviderID == provider.id {
+                                store.aiBlacklistFallbackProviderID = nil
                             }
+                            if store.defaultExplainProviderID == provider.id {
+                                store.defaultExplainProviderID = nil
+                            }
+                            if store.defaultSummaryProviderID == provider.id {
+                                store.defaultSummaryProviderID = store.aiProviders.first?.id
+                            }
+                            if store.defaultTranslationProviderID == provider.id {
+                                store.defaultTranslationProviderID = store.aiProviders.first?.id
+                            }
+                            store.persistSettings()
+                        } label: {
+                            Label("删除", systemImage: "trash")
                         }
+                    }
                 }
                 Button { showAddProvider = true } label: {
                     Label("添加 Provider", systemImage: "plus")
                 }
             } header: {
-                Text("AI Provider")
+                Text("AI 服务商")
             } footer: {
-                Text("左滑可测试该 Provider。Gemini、OpenAI、Anthropic 等统一管理；Gemini 走专用接口。")
+                Text("左滑「测试连接」可验证 Provider。Gemini、OpenAI、Anthropic 等统一管理；Gemini 走专用接口。默认引擎请在下方「功能默认」统一设置。")
             }
 
+            // MARK: 功能默认
             Section {
-                Picker("默认解释引擎", selection: Binding(
+                Picker("默认摘要引擎", selection: Binding(
+                    get: { store.defaultSummaryProviderID },
+                    set: { store.defaultSummaryProviderID = $0; store.persistSettings() }
+                )) {
+                    Text("未指定").tag(Optional<UUID>.none)
+                    ForEach(store.aiProviders) { p in
+                        Text(p.name).tag(Optional(p.id))
+                    }
+                }
+                Picker("默认 AI 翻译引擎", selection: Binding(
+                    get: { store.defaultTranslationProviderID },
+                    set: { store.defaultTranslationProviderID = $0; store.persistSettings() }
+                )) {
+                    Text("未指定").tag(Optional<UUID>.none)
+                    ForEach(store.aiProviders) { p in
+                        Text(p.name).tag(Optional(p.id))
+                    }
+                }
+                Picker("默认 AI 解释引擎", selection: Binding(
                     get: { store.defaultExplainProviderID },
                     set: { store.defaultExplainProviderID = $0; store.persistSettings() }
                 )) {
@@ -83,43 +109,19 @@ struct AISettingsView: View {
                         Text(p.name).tag(Optional(p.id))
                     }
                 }
-            } header: {
-                Text("AI 解释")
-            } footer: {
-                Text("框选文章文字后的「AI解释」使用此 Provider。选「跟随摘要引擎」时与摘要共用。")
-            }
-
-            Section {
-                NavigationLink {
-                    AIBlacklistSettingsView()
-                } label: {
-                    HStack {
-                        Text("AI 黑名单")
-                        Spacer()
-                        if !store.aiBlacklistTerms.isEmpty {
-                            Text("\(store.aiBlacklistTerms.count)")
-                                .foregroundStyle(.secondary)
-                        }
+                Picker("AI 输出语言", selection: $settings.aiOutputLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
                     }
                 }
-            } footer: {
-                Text("配置翻译 / 摘要 / 解释命中关键词时使用的备用 Provider。")
-            }
-
-            Section {
-                TextEditor(text: $settings.translationPrompt)
-                    .font(.system(size: 14, design: .monospaced))
-                    .frame(minHeight: 110)
-                Button("恢复默认翻译 Prompt") {
-                    store.translationPrompt = AppStore.defaultTranslationPrompt
-                    store.persistSettings()
-                }
+                .onChange(of: store.aiOutputLanguage) { _, _ in store.persistSettings() }
             } header: {
-                Text("翻译 Prompt")
+                Text("功能默认")
             } footer: {
-                Text("仅「AI 翻译」引擎使用。{{text}} 为待译内容，{{lang}} 为目标语言名称。")
+                Text("摘要 / AI 翻译 / AI 解释各自使用的 Provider。解释选「跟随摘要引擎」时与摘要共用。AI 输出语言用于摘要与解释（与翻译目标语言独立）。")
             }
 
+            // MARK: 提示词
             Section {
                 Picker("全局摘要模板", selection: $settings.globalSummaryPresetID) {
                     ForEach(store.summaryPromptPresets) { p in
@@ -132,9 +134,23 @@ struct AISettingsView: View {
                     Label("管理 Prompt 预设…", systemImage: "list.bullet.rectangle")
                 }
             } header: {
-                Text("摘要 Prompt 预设")
+                Text("提示词 · 摘要")
             } footer: {
-                Text("按类型优化的模板（科技/学术/投资/新闻/评测等），可编辑或添加自定义类型。各订阅源可在长按菜单单独指定。占位符：{{title}} {{content}} {{lang}}。")
+                Text("按类型优化的模板（科技/学术/投资/新闻/评测等）。各订阅源可在长按菜单单独指定。占位符：{{title}} {{content}} {{lang}}。")
+            }
+
+            Section {
+                TextEditor(text: $settings.translationPrompt)
+                    .font(.system(size: 14, design: .monospaced))
+                    .frame(minHeight: 110)
+                Button("恢复默认翻译 Prompt") {
+                    store.translationPrompt = AppStore.defaultTranslationPrompt
+                    store.persistSettings()
+                }
+            } header: {
+                Text("提示词 · 翻译")
+            } footer: {
+                Text("仅「AI 翻译」引擎使用。{{text}} 为待译内容，{{lang}} 为目标语言名称。")
             }
 
             Section {
@@ -146,33 +162,12 @@ struct AISettingsView: View {
                     store.persistSettings()
                 }
             } header: {
-                Text("解释 Prompt")
+                Text("提示词 · 解释")
             } footer: {
                 Text("{{text}} 为选中内容；{{lang}} 为 AI 输出语言。")
             }
 
-            Section {
-                Toggle("智能兴趣过滤", isOn: $settings.smartInterestFilterEnabled)
-                if store.smartInterestFilterEnabled {
-                    Toggle("低分自动标已读", isOn: $settings.autoMarkLowInterestRead)
-                    Toggle("列表按兴趣排序", isOn: $settings.sortByInterestScore)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("低分阈值 \(String(format: "%.2f", store.lowInterestThreshold))")
-                            .font(.subheadline)
-                        Slider(value: $settings.lowInterestThreshold, in: 0.1...0.7, step: 0.05)
-                    }
-                    Button("清空兴趣画像") {
-                        store.interestWeights = [:]
-                        store.persistSettings()
-                    }
-                    .foregroundStyle(.red)
-                }
-            } header: {
-                Text("兴趣与过滤")
-            } footer: {
-                Text("根据收藏与「不感兴趣」学习词权重，给文章打分。低分可沉底或自动已读。无需额外 API 费用。")
-            }
-
+            // MARK: 路由与费用
             Section {
                 Toggle("模型费用路由", isOn: $settings.modelRoutingEnabled)
                 if store.modelRoutingEnabled {
@@ -180,13 +175,25 @@ struct AISettingsView: View {
                         Text("短文本阈值 \(store.modelRoutingShortLimit) 字")
                     }
                 }
+                NavigationLink {
+                    AIBlacklistSettingsView()
+                } label: {
+                    HStack {
+                        Text("敏感词回退")
+                        Spacer()
+                        if !store.aiBlacklistTerms.isEmpty {
+                            Text("\(store.aiBlacklistTerms.count)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             } header: {
-                Text("费用与模型路由")
+                Text("路由与费用")
             } footer: {
-                Text("开启后：短文本用 Provider 的「经济模型」，长文摘要与解释用默认强模型。请在编辑 Provider 中填写经济模型 ID。")
+                Text("费用路由：短文本用「经济模型」，长文用默认强模型。敏感词回退：翻译/摘要/解释命中关键词时改用备用 Provider。")
             }
         }
-        .navigationTitle("AI 设置")
+        .navigationTitle("AI")
         .navigationBarTitleDisplayMode(.inline)
         .appFormChrome()
         .onDisappear { store.persistSettings() }
@@ -194,10 +201,6 @@ struct AISettingsView: View {
         .onChange(of: store.summaryPrompt) { _, _ in store.persistSettings() }
         .onChange(of: store.explainPrompt) { _, _ in store.persistSettings() }
         .onChange(of: store.globalSummaryPresetID) { _, _ in store.persistSettings() }
-        .onChange(of: store.smartInterestFilterEnabled) { _, _ in store.persistSettings() }
-        .onChange(of: store.autoMarkLowInterestRead) { _, _ in store.persistSettings() }
-        .onChange(of: store.sortByInterestScore) { _, _ in store.persistSettings() }
-        .onChange(of: store.lowInterestThreshold) { _, _ in store.persistSettings() }
         .onChange(of: store.modelRoutingEnabled) { _, _ in store.persistSettings() }
         .onChange(of: store.modelRoutingShortLimit) { _, _ in store.persistSettings() }
         .sheet(isPresented: $showAddProvider) { EditProviderView(provider: nil) }
@@ -217,7 +220,7 @@ struct AISettingsView: View {
     }
 }
 
-// MARK: - AI 黑名单（三级：设置 → AI 设置 → AI 黑名单）
+// MARK: - 敏感词回退（设置 → AI → 路由与费用 → 敏感词回退）
 
 struct AIBlacklistSettingsView: View {
     @Environment(AppStore.self) private var store
@@ -273,7 +276,7 @@ struct AIBlacklistSettingsView: View {
                 Text("备用 Provider")
             }
         }
-        .navigationTitle("AI 黑名单")
+        .navigationTitle("敏感词回退")
         .navigationBarTitleDisplayMode(.inline)
         .appFormChrome()
         .onDisappear { store.persistSettings() }
@@ -505,26 +508,41 @@ struct EditProviderView: View {
                         Task { await testCurrent() }
                     } label: {
                         HStack {
-                            Label("测试此 Provider", systemImage: "network")
+                            if isTesting {
+                                ProgressView().scaleEffect(0.85)
+                                Text("测试中…")
+                            } else {
+                                Label("测试连接", systemImage: "network")
+                            }
                             Spacer()
-                            if isTesting { ProgressView() }
                         }
                     }
                     .disabled(isTesting || baseURL.isEmpty || (model.isEmpty && parsedModels.isEmpty))
                     if let testResult {
-                        Text(testResult)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(testResult.contains("不可用") && !testResult.contains("可用") ? Color.red : Color.primary)
-                            .textSelection(.enabled)
+                        let failed = testResult.contains("不可用") || testResult.hasPrefix("失败") || testResult.contains("未配置")
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: failed ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(failed ? Color.red : Color.green)
+                            Text(testResult)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(failed ? Color.red : Color.secondary)
+                                .textSelection(.enabled)
+                        }
                     }
+                } header: {
+                    Text("连接")
                 } footer: {
-                    Text("使用当前表单中的配置（需先保存 Key 后对新 Provider 更准确；已有 Provider 直接测已存 Key）。")
+                    Text("使用当前表单配置测试连接（需先保存 Key 后对新 Provider 更准确；已有 Provider 直接测已存 Key）。成功/失败原因显示在按钮下方。")
                 }
 
-                Section("默认设置") {
+                Section {
                     Toggle("设为默认摘要引擎", isOn: $isDefaultSummary)
                     Toggle("设为默认 AI 翻译引擎", isOn: $isDefaultTranslation)
                     Toggle("设为默认 AI 解释引擎", isOn: $isDefaultExplain)
+                } header: {
+                    Text("快速设为默认")
+                } footer: {
+                    Text("也可在「AI → 功能默认」统一选择。保存后生效。")
                 }
             }
             .navigationTitle(isNew ? "添加 Provider" : "编辑 Provider")
