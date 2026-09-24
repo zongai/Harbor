@@ -27,6 +27,8 @@ final class SettingsStore {
     var articleBlacklistTerms: [String] = []
     var aiBlacklistFallbackProviderID: UUID?
     var showReadArticles: Bool = false
+    /// 订阅列表是否显示未读数字角标（默认开启）
+    var showUnreadCount: Bool = true
     var translationPrompt: String = AppStore.defaultTranslationPrompt
     var summaryPrompt: String = AppStore.defaultSummaryPrompt
     var explainPrompt: String = AppStore.defaultExplainPrompt

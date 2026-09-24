@@ -659,7 +659,7 @@ struct GroupSectionHeader: View {
                         .font(AppTypography.font(size: metaSize, weight: .medium))
                         .foregroundStyle(theme.muted)
                         .monospacedDigit()
-                    if unreadCount > 0 {
+                    if store.showUnreadCount, unreadCount > 0 {
                         Text("\(unreadCount)")
                             .font(AppTypography.font(size: max(10, titleSize - 3), weight: .bold))
                             .foregroundStyle(Color(.systemBackground))
@@ -828,11 +828,10 @@ struct FeedRow: View {
                         .lineLimit(1)
                     HStack(spacing: 6) {
                         if CommentFetcher.isSubstackLike(feed: live) {
-                            Label("Substack", systemImage: "newspaper")
-                                .labelStyle(.titleAndIcon)
-                                .font(.system(size: 10, weight: .semibold))
+                            Image(systemName: "newspaper")
+                                .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(Color(.systemBackground))
-                                .padding(.horizontal, 6)
+                                .padding(.horizontal, 4)
                                 .padding(.vertical, 2)
                                 .background(Color.orange.opacity(0.9), in: Capsule())
                                 .accessibilityLabel("Substack 源")
@@ -869,7 +868,7 @@ struct FeedRow: View {
                     }
                 }
                 Spacer(minLength: AppSpacing.xs)
-                if live.unreadCount > 0 {
+                if store.showUnreadCount, live.unreadCount > 0 {
                     Text("\(live.unreadCount)")
                         .font(AppTypography.label())
                         .monospacedDigit()
@@ -883,11 +882,11 @@ struct FeedRow: View {
             Divider()
                 .opacity(0.35)
         }
-        .id("\(live.id.uuidString)-\(live.lastRefreshError ?? "")-\(live.unreadCount)")
+        .id("\(live.id.uuidString)-\(live.lastRefreshError ?? "")-\(live.unreadCount)-\(store.showUnreadCount)")
         .accessibilityElement(children: .combine)
         .accessibilityLabel({
             var parts = [live.title]
-            if live.unreadCount > 0 { parts.append("\(live.unreadCount) 未读") }
+            if store.showUnreadCount, live.unreadCount > 0 { parts.append("\(live.unreadCount) 未读") }
             if let last = live.lastFetched { parts.append(Self.relativeString(last)) }
             if let err = live.lastRefreshError, !err.isEmpty { parts.append("刷新失败") }
             return parts.joined(separator: "，")

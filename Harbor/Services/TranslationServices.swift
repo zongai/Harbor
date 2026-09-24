@@ -901,38 +901,47 @@ enum HTMLUtils {
         return (extracted.text, extracted.images)
     }
 
-    /// 抽出 table / img，用占位符替换后送译；表格跳过翻译以保留样式
+    /// 抽出 table / img，用占位符替换后送译；表格跳过翻译以保留样式。
+    /// 索引按正文出现顺序编号（0 = 首张/首表），避免 reversed + insert(0) 导致图序颠倒。
     static func extractMediaForTranslation(_ html: String) -> (text: String, images: [String], tables: [String]) {
         var working = html
         var tables: [String] = []
         var images: [String] = []
 
-        // 1) 整表抽出（从后往前）
+        // 1) 整表：先按文档顺序编号，再从后往前替换以保护 Range
         if let tableRe = try? NSRegularExpression(
             pattern: #"<table\b[\s\S]*?</table>"#,
             options: [.caseInsensitive]
         ) {
             let ns = working as NSString
-            let matches = tableRe.matches(in: working, range: NSRange(location: 0, length: ns.length)).reversed()
+            let matches = tableRe.matches(in: working, range: NSRange(location: 0, length: ns.length))
+            var replacements: [(Range<String.Index>, String)] = []
             for match in matches {
                 guard let fullRange = Range(match.range, in: working) else { continue }
                 let tableHTML = String(working[fullRange])
-                tables.insert(tableHTML, at: 0)
-                let placeholder = "\n\n[[TABLE_\(tables.count - 1)]]\n\n"
-                working.replaceSubrange(fullRange, with: placeholder)
+                let idx = tables.count
+                tables.append(tableHTML)
+                replacements.append((fullRange, "\n\n[[TABLE_\(idx)]]\n\n"))
+            }
+            for (range, token) in replacements.reversed() {
+                working.replaceSubrange(range, with: token)
             }
         }
 
-        // 2) 图片
+        // 2) 图片：同样按文档顺序编号，避免译文还原后图序颠倒
         if let imgRe = try? NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: .caseInsensitive) {
             let ns = working as NSString
-            let matches = imgRe.matches(in: working, range: NSRange(location: 0, length: ns.length)).reversed()
+            let matches = imgRe.matches(in: working, range: NSRange(location: 0, length: ns.length))
+            var replacements: [(Range<String.Index>, String)] = []
             for match in matches {
                 guard let fullRange = Range(match.range, in: working) else { continue }
                 let tag = String(working[fullRange])
-                images.insert(tag, at: 0)
-                let placeholder = "\n\n[[IMG_\(images.count - 1)]]\n\n"
-                working.replaceSubrange(fullRange, with: placeholder)
+                let idx = images.count
+                images.append(tag)
+                replacements.append((fullRange, "\n\n[[IMG_\(idx)]]\n\n"))
+            }
+            for (range, token) in replacements.reversed() {
+                working.replaceSubrange(range, with: token)
             }
         }
 

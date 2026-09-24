@@ -1920,6 +1920,13 @@ enum ArticleContentFetcher {
                 if w <= 40 { score -= 35 }
             }
         }
+        // Substack CDN：路径内 w_1456 / w_2400
+        if let cdnW = widthFromCDNPath(src) {
+            score += min(cdnW / 30, 40)
+            if cdnW <= 48 { score -= 35 }
+        }
+        // 明显残缺的 srcset 碎片（无 scheme）降权
+        if !lower.hasPrefix("http") { score -= 80 }
         return score
     }
 
@@ -2223,22 +2230,12 @@ enum ArticleContentFetcher {
         return out
     }
 
+    /// 解析 srcset，兼容 Substack 等「URL 路径内含逗号」的 CDN（不能简单按 `,` 切开）
     private static func bestURLFromSrcset(_ srcset: String?) -> String? {
         guard let srcset, !srcset.isEmpty else { return nil }
         var bestURL: String?
         var bestW = -1
-        for part in srcset.split(separator: ",") {
-            let bits = part.trimmingCharacters(in: .whitespaces).split(separator: " ")
-            guard let url = bits.first.map(String.init), !url.isEmpty else { continue }
-            var w = 0
-            if bits.count >= 2 {
-                let desc = bits[1].lowercased()
-                if desc.hasSuffix("w") {
-                    w = Int(desc.dropLast()) ?? 0
-                } else if desc.hasSuffix("x") {
-                    w = Int((Double(desc.dropLast()) ?? 1) * 1000)
-                }
-            }
+        for (url, w) in parseSrcsetEntries(srcset) {
             if w >= bestW {
                 bestW = w
                 bestURL = url
@@ -2247,6 +2244,61 @@ enum ArticleContentFetcher {
             }
         }
         return bestURL
+    }
+
+    /// 仅在「逗号 + 新的 http(s) URL」处切分；路径里的 `,w_424,c_limit` 不会被拆断
+    private static func parseSrcsetEntries(_ srcset: String) -> [(url: String, width: Int)] {
+        var chunks: [String] = []
+        if let re = try? NSRegularExpression(pattern: #",\s*(?=https?://)"#, options: .caseInsensitive) {
+            let ns = srcset as NSString
+            var last = 0
+            for m in re.matches(in: srcset, range: NSRange(location: 0, length: ns.length)) {
+                let r = m.range
+                guard r.location >= last else { continue }
+                chunks.append(ns.substring(with: NSRange(location: last, length: r.location - last)))
+                last = r.location + r.length
+            }
+            if last < ns.length {
+                chunks.append(ns.substring(with: NSRange(location: last, length: ns.length - last)))
+            }
+        } else {
+            chunks = srcset.split(separator: ",").map(String.init)
+        }
+        var out: [(String, Int)] = []
+        out.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            let trimmed = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            // 描述符在末尾：`…jpeg 1456w` / `… 2x`
+            let bits = trimmed.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard let first = bits.first, first.lowercased().hasPrefix("http") else { continue }
+            var w = 0
+            if bits.count >= 2 {
+                let desc = bits[bits.count - 1].lowercased()
+                if desc.hasSuffix("w"), let n = Int(desc.dropLast()) {
+                    w = n
+                } else if desc.hasSuffix("x"), let x = Double(desc.dropLast()) {
+                    w = Int(x * 1000)
+                }
+            }
+            // Substack / CDN 路径参数 w_2400
+            if w == 0, let n = widthFromCDNPath(first) {
+                w = n
+            }
+            out.append((first, w))
+        }
+        return out
+    }
+
+    /// 从 `...,w_1456,...` 或 `?w=1456` 提取宽度
+    private static func widthFromCDNPath(_ url: String) -> Int? {
+        if let re = try? NSRegularExpression(pattern: #"[?/,]w[_=](\d{2,5})"#, options: .caseInsensitive),
+           let m = re.firstMatch(in: url, range: NSRange(location: 0, length: (url as NSString).length)),
+           m.numberOfRanges >= 2 {
+            let n = (url as NSString).substring(with: m.range(at: 1))
+            return Int(n)
+        }
+        return nil
     }
 
 

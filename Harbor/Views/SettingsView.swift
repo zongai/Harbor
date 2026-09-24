@@ -163,6 +163,7 @@ struct SettingsView: View {
                 // MARK: 订阅
                 Section {
                     Toggle("显示已读文章", isOn: $settings.showReadArticles)
+                    Toggle("显示未读数", isOn: $settings.showUnreadCount)
                     Picker("默认排序", selection: $settings.feedSortMode) {
                         ForEach(FeedSortMode.allCases) { mode in
                             Text(mode.displayName).tag(mode)
@@ -172,7 +173,7 @@ struct SettingsView: View {
                 } header: {
                     Text("订阅")
                 } footer: {
-                    Text("源的添加、分组与刷新在「订阅」页。排序影响订阅列表顺序。")
+                    Text("源的添加、分组与刷新在「订阅」页。排序影响订阅列表顺序。「显示未读数」控制源与分组旁的数字角标。")
                 }
 
                 // MARK: AI
@@ -407,6 +408,7 @@ Section {
             }
             .onDisappear { store.persistSettings() }
             .onChange(of: store.showReadArticles) { _, _ in store.persistSettings() }
+            .onChange(of: store.showUnreadCount) { _, _ in store.persistSettings() }
             .onChange(of: store.titleDisplayMode) { _, _ in store.persistSettings() }
         }
     }

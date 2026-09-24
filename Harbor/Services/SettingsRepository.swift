@@ -15,6 +15,7 @@ struct PersistedAppSettings: Codable {
     var defaultTranslationEngine: TranslationEngine = .google
     var translationEngineChain: [TranslationEngine] = TranslationEngine.allCases
     var showReadArticles: Bool = false
+    var showUnreadCount: Bool = true
     var translationPrompt: String = AppStore.defaultTranslationPrompt
     var summaryPrompt: String = AppStore.defaultSummaryPrompt
     var explainPrompt: String = AppStore.defaultExplainPrompt
@@ -70,6 +71,7 @@ enum SettingsRepository {
         d.set(s.defaultTranslationEngine.rawValue, forKey: "defaultTranslationEngine")
         d.set(s.translationEngineChain.map(\.rawValue), forKey: "translationEngineChain")
         d.set(s.showReadArticles, forKey: "showReadArticles")
+        d.set(s.showUnreadCount, forKey: "showUnreadCount")
         d.set(s.translationPrompt, forKey: "translationPrompt")
         d.set(s.summaryPrompt, forKey: "summaryPrompt")
         d.set(s.explainPrompt, forKey: "explainPrompt")
@@ -168,6 +170,7 @@ enum SettingsRepository {
             s.defaultTranslationEngine = first
         }
         s.showReadArticles = d.object(forKey: "showReadArticles") as? Bool ?? false
+        s.showUnreadCount = d.object(forKey: "showUnreadCount") as? Bool ?? true
         if let p = d.string(forKey: "translationPrompt") { s.translationPrompt = p }
         if let p = d.string(forKey: "summaryPrompt") { s.summaryPrompt = p }
         if let p = d.string(forKey: "explainPrompt") { s.explainPrompt = p }

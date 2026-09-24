@@ -820,21 +820,60 @@ enum ContentBlockParser {
         }
         func bestFromSrcset(_ srcset: String?) -> String? {
             guard let srcset, !srcset.isEmpty else { return nil }
+            // 仅在「逗号 + 新 http(s) URL」处切分，避免 Substack 路径内 `,w_424,c_limit` 被拆断
+            var chunks: [String] = []
+            if let re = try? NSRegularExpression(pattern: #",\s*(?=https?://)"#, options: .caseInsensitive) {
+                let ns = srcset as NSString
+                var last = 0
+                for m in re.matches(in: srcset, range: NSRange(location: 0, length: ns.length)) {
+                    let r = m.range
+                    guard r.location >= last else { continue }
+                    chunks.append(ns.substring(with: NSRange(location: last, length: r.location - last)))
+                    last = r.location + r.length
+                }
+                if last < ns.length {
+                    chunks.append(ns.substring(with: NSRange(location: last, length: ns.length - last)))
+                }
+            } else {
+                chunks = srcset.split(separator: ",").map(String.init)
+            }
             var best: String?
             var bestW = -1
-            for part in srcset.split(separator: ",") {
-                let bits = part.trimmingCharacters(in: .whitespaces).split(separator: " ")
-                guard let url = bits.first.map(String.init), !url.isEmpty else { continue }
+            for chunk in chunks {
+                let trimmed = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                let bits = trimmed.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+                guard let url = bits.first, url.lowercased().hasPrefix("http") else { continue }
                 var w = 0
                 if bits.count >= 2 {
-                    let d = bits[1].lowercased()
+                    let d = bits[bits.count - 1].lowercased()
                     if d.hasSuffix("w") { w = Int(d.dropLast()) ?? 0 }
                     else if d.hasSuffix("x") { w = Int((Double(d.dropLast()) ?? 1) * 1000) }
+                }
+                if w == 0, let m = url.range(of: #"[?/,]w[_=](\d{2,5})"#, options: [.regularExpression, .caseInsensitive]) {
+                    let slice = String(url[m])
+                    if let num = slice.split(whereSeparator: { !$0.isNumber }).last, let n = Int(num) {
+                        w = n
+                    }
                 }
                 if w >= bestW { bestW = w; best = url }
                 else if best == nil { best = url }
             }
             return best
+        }
+        /// Substack data-attrs JSON 里的原图（S3，无 CDN 变换）
+        func substackOriginalFromDataAttrs() -> String? {
+            guard let raw = attr("data-attrs") else { return nil }
+            // HTML 实体解码后的 JSON：{"src":"https://substack-post-media.s3..."}
+            let decoded = raw
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&#34;", with: "\"")
+                .replacingOccurrences(of: "&amp;", with: "&")
+            if let re = try? NSRegularExpression(pattern: #""src"\s*:\s*"(https://[^"]+)""#, options: []),
+               let m = re.firstMatch(in: decoded, range: NSRange(location: 0, length: (decoded as NSString).length)),
+               m.numberOfRanges >= 2 {
+                return (decoded as NSString).substring(with: m.range(at: 1))
+            }
+            return nil
         }
         let src = attr("src")
         let srcIsPlaceholder: Bool = {
@@ -849,6 +888,7 @@ enum ContentBlockParser {
             attr("data-large_image"),
             attr("data-large-file"),
             attr("data-original"),
+            substackOriginalFromDataAttrs(),
             attr("data-src"),
             attr("data-lazy-src"),
             attr("data-url"),
@@ -856,8 +896,8 @@ enum ContentBlockParser {
             bestFromSrcset(attr("srcset")),
             srcIsPlaceholder ? nil : src,
             src
-        ].compactMap { $0 }.filter { !$0.isEmpty && !$0.hasPrefix("data:") }
-        // 在候选中挑「看起来最大」的一条（带尺寸后缀或 w= 参数）
+        ].compactMap { $0 }.filter { !$0.isEmpty && !$0.hasPrefix("data:") && $0.lowercased().hasPrefix("http") }
+        // 在候选中挑「看起来最大」的一条（带尺寸后缀或 w= / w_ 参数）
         return candidates.max(by: { a, b in
             imageURLPreferScore(a) < imageURLPreferScore(b)
         })
@@ -866,15 +906,29 @@ enum ContentBlockParser {
     private static func imageURLPreferScore(_ url: String) -> Int {
         var score = 0
         let u = url.lowercased()
+        if !u.hasPrefix("http") { return -10_000 }
         if let re = try? NSRegularExpression(pattern: #"-(\d{2,4})x(\d{2,4})\."#, options: []),
            let m = re.firstMatch(in: url, range: NSRange(location: 0, length: (url as NSString).length)),
            m.numberOfRanges >= 2 {
+            let w = Int((url as NSString).substring(with: m.range(at: 1))) ?? 0
+            score += w
+        } else if let re = try? NSRegularExpression(pattern: #"_(\d{3,5})x(\d{3,5})\."#, options: []),
+                  let m = re.firstMatch(in: url, range: NSRange(location: 0, length: (url as NSString).length)),
+                  m.numberOfRanges >= 2 {
+            // Substack S3：…_6819x3166.jpeg
             let w = Int((url as NSString).substring(with: m.range(at: 1))) ?? 0
             score += w
         } else {
             score += 2000 // 无尺寸后缀倾向原图
         }
         if let wStr = matchFirstAttr(#"[?&]w=(\d+)"#, in: u), let w = Int(wStr) {
+            score += w
+        }
+        // Substack CDN 路径 w_2400
+        if let re = try? NSRegularExpression(pattern: #"[?/,]w[_=](\d{2,5})"#, options: .caseInsensitive),
+           let m = re.firstMatch(in: url, range: NSRange(location: 0, length: (url as NSString).length)),
+           m.numberOfRanges >= 2,
+           let w = Int((url as NSString).substring(with: m.range(at: 1))) {
             score += w
         }
         if u.contains("placeholder") || u.contains("blur") { score -= 5000 }
@@ -1644,7 +1698,7 @@ struct DownsampledArticleImage: View {
         loadFailed = true
     }
 
-    /// Photon CDN 与源站 uploads 互备，提高图表可达性
+    /// Photon CDN / Substack CDN 与源站互备，提高配图可达性
     private static func imageURLCandidates(for url: URL) -> [URL] {
         var list: [URL] = [url]
         let s = url.absoluteString
@@ -1673,9 +1727,29 @@ struct DownsampledArticleImage: View {
                 list.append(photon)
             }
         }
+        // Substack CDN：路径末尾嵌套了 percent-encoded 原图 URL，作备用
+        if let host = url.host?.lowercased(), host.contains("substackcdn.com") || host.contains("substack.com") {
+            if let nested = Self.unwrapSubstackNestedImageURL(s),
+               let origin = URL(string: nested) {
+                list.append(origin)
+            }
+        }
         // 去重保序
         var seen = Set<String>()
         return list.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    /// `…/image/fetch/…/https%3A%2F%2Fsubstack-post-media.s3…` → 解码后的原图
+    private static func unwrapSubstackNestedImageURL(_ absolute: String) -> String? {
+        guard let re = try? NSRegularExpression(
+            pattern: #"/(https?%3A%2F%2F[^?\s\"']+)"#,
+            options: .caseInsensitive
+        ) else { return nil }
+        let ns = absolute as NSString
+        guard let m = re.firstMatch(in: absolute, range: NSRange(location: 0, length: ns.length)),
+              m.numberOfRanges >= 2 else { return nil }
+        let encoded = ns.substring(with: m.range(at: 1))
+        return encoded.removingPercentEncoding
     }
 
     private func fetchImage(_ url: URL, cacheKey: String) async -> UIImage? {
@@ -1694,6 +1768,8 @@ struct DownsampledArticleImage: View {
                     request.setValue("https://www.visualcapitalist.com/", forHTTPHeaderField: "Referer")
                 } else if host.contains("nyt.com") || host.contains("nytimes.com") {
                     request.setValue("https://cn.nytimes.com/", forHTTPHeaderField: "Referer")
+                } else if host.contains("substack") {
+                    request.setValue("https://substack.com/", forHTTPHeaderField: "Referer")
                 } else if let scheme = url.scheme {
                     request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
                 }
@@ -1879,7 +1955,24 @@ enum DownsampledArticleImageCandidates {
                 list.append(photon)
             }
         }
+        if let host = url.host?.lowercased(),
+           host.contains("substackcdn.com") || host.contains("substack.com"),
+           let nested = unwrapSubstackNested(s),
+           let origin = URL(string: nested) {
+            list.append(origin)
+        }
         var seen = Set<String>()
         return list.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    private static func unwrapSubstackNested(_ absolute: String) -> String? {
+        guard let re = try? NSRegularExpression(
+            pattern: #"/(https?%3A%2F%2F[^?\s\"']+)"#,
+            options: .caseInsensitive
+        ) else { return nil }
+        let ns = absolute as NSString
+        guard let m = re.firstMatch(in: absolute, range: NSRange(location: 0, length: ns.length)),
+              m.numberOfRanges >= 2 else { return nil }
+        return ns.substring(with: m.range(at: 1)).removingPercentEncoding
     }
 }

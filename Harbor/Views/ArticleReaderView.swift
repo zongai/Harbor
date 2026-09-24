@@ -139,7 +139,7 @@ struct ArticleReaderView: View {
                         }
                     }
 
-                    // Metadata — 时间 / 全文 左对齐，译文来源靠右
+                    // Metadata — 时间 / 全文 左对齐；翻译中或译文来源靠右
                     HStack(alignment: .center, spacing: AppSpacing.xs) {
                         if !currentArticle.relativeTime.isEmpty {
                             Text(currentArticle.relativeTime)
@@ -160,10 +160,16 @@ struct ArticleReaderView: View {
                                 .foregroundStyle(.orange)
                         }
                         Spacer(minLength: AppSpacing.sm)
-                        if showTranslated,
-                           let engineName = currentArticle.translationEngineName?
-                            .trimmingCharacters(in: .whitespacesAndNewlines),
-                           !engineName.isEmpty {
+                        if let progress = translationProgress {
+                            Text(progress)
+                                .font(AppTypography.articleMeta(size: max(11, store.readerTitleFontSize - 13)))
+                                .foregroundStyle(theme.muted)
+                                .lineLimit(1)
+                                .accessibilityLabel(progress)
+                        } else if showTranslated,
+                                  let engineName = currentArticle.translationEngineName?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                                  !engineName.isEmpty {
                             Label(engineName, systemImage: "translate")
                                 .font(AppTypography.articleMeta(size: max(11, store.readerTitleFontSize - 13)))
                                 .foregroundStyle(theme.muted)
@@ -219,14 +225,6 @@ struct ArticleReaderView: View {
                         .readingColumn()
                 }
                 readerFullContentErrorBanner()
-                if let progress = translationProgress {
-                    Text(progress)
-                        .font(AppTypography.caption())
-                        .foregroundStyle(theme.muted)
-                        .padding(.horizontal, AppLayout.readingHorizontalPadding)
-                        .padding(.top, AppSpacing.xs)
-                        .readingColumn()
-                }
                 if let hint = fullContentHint {
                     Text(hint)
                         .font(AppTypography.caption())

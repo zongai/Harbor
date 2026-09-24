@@ -123,6 +123,11 @@ class AppStore: AIService.Runtime {
         set { settings.showReadArticles = newValue }
     }
 
+    var showUnreadCount: Bool {
+        get { settings.showUnreadCount }
+        set { settings.showUnreadCount = newValue }
+    }
+
     var translationPrompt: String {
         get { settings.translationPrompt }
         set { settings.translationPrompt = newValue }
@@ -784,6 +789,7 @@ class AppStore: AIService.Runtime {
         var titleDisplayMode: String
         var defaultTranslationEngine: String
         var showReadArticles: Bool
+        var showUnreadCount: Bool?
         var translationPrompt: String
         var summaryPrompt: String
         var explainPrompt: String
@@ -861,6 +867,7 @@ class AppStore: AIService.Runtime {
             titleDisplayMode: titleDisplayMode.rawValue,
             defaultTranslationEngine: defaultTranslationEngine.rawValue,
             showReadArticles: showReadArticles,
+            showUnreadCount: showUnreadCount,
             translationPrompt: translationPrompt,
             summaryPrompt: summaryPrompt,
             explainPrompt: explainPrompt,
@@ -961,6 +968,7 @@ class AppStore: AIService.Runtime {
         if let m = TitleDisplayMode(rawValue: payload.titleDisplayMode) { titleDisplayMode = m }
         if let e = TranslationEngine(rawValue: payload.defaultTranslationEngine) { defaultTranslationEngine = e }
         showReadArticles = payload.showReadArticles
+        if let v = payload.showUnreadCount { showUnreadCount = v }
         translationPrompt = payload.translationPrompt
         summaryPrompt = payload.summaryPrompt
         explainPrompt = payload.explainPrompt
@@ -2580,6 +2588,21 @@ class AppStore: AIService.Runtime {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
+        // 简繁转换：正文已是另一侧中文时本地映射，不走翻译 API（与设置说明一致）
+        if ChineseScript.needsConversion(text: trimmed, to: targetLanguage) {
+            let converted = ChineseScript.convert(trimmed, to: targetLanguage)
+            if converted != trimmed {
+                lastUsedTranslationEngine = nil
+                TranslationCache.set(
+                    converted,
+                    text: trimmed,
+                    targetLang: targetLanguage,
+                    provider: "zh-script"
+                )
+                return converted
+            }
+        }
+
         // 缓存命中（参考 Readest：原文 + 目标语 + 引擎）
         let cacheProviders = effectiveTranslationChain().filter { !excluding.contains($0) }
         for engine in cacheProviders {
@@ -2599,7 +2622,11 @@ class AppStore: AIService.Runtime {
             guard isTranslationEngineReady(engine) else { continue }
             do {
                 let raw = try await translateWithEngine(engine, text: trimmed)
-                let result = TranslationPolish.polish(raw, targetLang: targetLanguage)
+                var result = TranslationPolish.polish(raw, targetLang: targetLanguage)
+                // API 结果若仍是另一侧中文，再做一次本地简繁对齐
+                if ChineseScript.needsConversion(text: result, to: targetLanguage) {
+                    result = ChineseScript.convert(result, to: targetLanguage)
+                }
                 lastUsedTranslationEngine = engine
                 TranslationCache.set(
                     result,
@@ -2635,50 +2662,85 @@ class AppStore: AIService.Runtime {
     /// - AI：多 Provider 分片并发
     /// - Google / Lingva / MyMemory：单条请求 + 受控并发（无可靠多句 API）
     /// 批量缺口用引擎链单条补齐，避免整批失败
+    /// 简繁转换：已是另一侧中文的条目本地映射，不占用 API 名额
     func translateTexts(_ texts: [String], concurrency: Int? = nil) async -> [String?] {
         guard !texts.isEmpty else { return [] }
+        let lang = targetLanguage
+
+        // 先本地简繁转换，再对剩余条目走 API
+        var results: [String?] = Array(repeating: nil, count: texts.count)
+        var needAPI: [(Int, String)] = []
+        needAPI.reserveCapacity(texts.count)
+        for (i, text) in texts.enumerated() {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                results[i] = ""
+                continue
+            }
+            if ChineseScript.needsConversion(text: trimmed, to: lang) {
+                let converted = ChineseScript.convert(trimmed, to: lang)
+                if converted != trimmed {
+                    results[i] = converted
+                    TranslationCache.set(converted, text: trimmed, targetLang: lang, provider: "zh-script")
+                    continue
+                }
+            }
+            needAPI.append((i, text))
+        }
+        if needAPI.isEmpty { return results }
+
+        let apiTexts = needAPI.map(\.1)
         let chain = effectiveTranslationChain()
         let primary = chain.first(where: { isTranslationEngineReady($0) && !isTranslationEngineCooling($0) })
             ?? chain.first(where: { isTranslationEngineReady($0) })
             ?? defaultTranslationEngine
         let limit = resolvedTranslationConcurrency(for: primary, override: concurrency)
 
-        var results: [String?]
+        var apiResults: [String?]
         var usedPrimary = false
 
         switch primary {
         case .deepl:
-            results = await translateTextsWithDeepL(texts, targetLang: targetLanguage.deeplCode)
-            usedPrimary = results.contains(where: { $0?.isEmpty == false })
+            apiResults = await translateTextsWithDeepL(apiTexts, targetLang: targetLanguage.deeplCode)
+            usedPrimary = apiResults.contains(where: { $0?.isEmpty == false })
             if usedPrimary { lastUsedTranslationEngine = .deepl }
         case .microsoft:
-            results = await translateTextsWithMicrosoft(texts, targetLang: targetLanguage.microsoftCode)
-            usedPrimary = results.contains(where: { $0?.isEmpty == false })
+            apiResults = await translateTextsWithMicrosoft(apiTexts, targetLang: targetLanguage.microsoftCode)
+            usedPrimary = apiResults.contains(where: { $0?.isEmpty == false })
             if usedPrimary { lastUsedTranslationEngine = .microsoft }
         case .ai:
-            results = await translateTextsWithAIProviders(texts, perProviderConcurrency: max(1, limit))
-            usedPrimary = results.contains(where: { $0?.isEmpty == false })
+            apiResults = await translateTextsWithAIProviders(apiTexts, perProviderConcurrency: max(1, limit))
+            usedPrimary = apiResults.contains(where: { $0?.isEmpty == false })
             if usedPrimary { lastUsedTranslationEngine = .ai }
         case .google, .mymemory, .lingva, .yandex, .azure:
-            // 无稳定多句批量 API：并发单条（每条仍走完整引擎链）
-            return await translateConcurrently(texts, concurrency: limit)
+            // 无稳定多句批量 API：并发单条（每条仍走完整引擎链，含简繁）
+            let concurrent = await translateConcurrently(apiTexts, concurrency: limit)
+            for (j, (origIdx, _)) in needAPI.enumerated() {
+                if j < concurrent.count { results[origIdx] = concurrent[j] }
+            }
+            return results
         }
 
         // 首选批量有缺口时，用引擎链单条补（排除已失败的首选，避免重复撞限流）
-        if results.contains(where: { $0 == nil || $0?.isEmpty == true }) {
+        if apiResults.contains(where: { $0 == nil || $0?.isEmpty == true }) {
             let exclude: Set<TranslationEngine> = usedPrimary ? [primary] : []
-            results = await fillMissingTranslations(results, texts: texts, excluding: exclude, concurrency: limit)
+            apiResults = await fillMissingTranslations(apiResults, texts: apiTexts, excluding: exclude, concurrency: limit)
         }
-        // 批量结果润色 + 写入缓存（单条路径已在 translateText 处理）
-        let lang = targetLanguage
+        // 批量结果润色 + 简繁对齐 + 写入缓存
         let providerKey = primary.rawValue
-        for i in results.indices {
-            guard let raw = results[i], !raw.isEmpty else { continue }
-            let polished = TranslationPolish.polish(raw, targetLang: lang)
-            results[i] = polished
-            if i < texts.count {
-                TranslationCache.set(polished, text: texts[i], targetLang: lang, provider: providerKey)
+        for j in apiResults.indices {
+            guard let raw = apiResults[j], !raw.isEmpty else { continue }
+            var polished = TranslationPolish.polish(raw, targetLang: lang)
+            if ChineseScript.needsConversion(text: polished, to: lang) {
+                polished = ChineseScript.convert(polished, to: lang)
             }
+            apiResults[j] = polished
+            if j < apiTexts.count {
+                TranslationCache.set(polished, text: apiTexts[j], targetLang: lang, provider: providerKey)
+            }
+        }
+        for (j, (origIdx, _)) in needAPI.enumerated() {
+            if j < apiResults.count { results[origIdx] = apiResults[j] }
         }
         return results
     }
@@ -3571,6 +3633,7 @@ class AppStore: AIService.Runtime {
             defaultTranslationEngine: defaultTranslationEngine,
             translationEngineChain: translationEngineChain,
             showReadArticles: showReadArticles,
+            showUnreadCount: showUnreadCount,
             translationPrompt: translationPrompt,
             summaryPrompt: summaryPrompt,
             explainPrompt: explainPrompt,
@@ -3624,6 +3687,7 @@ class AppStore: AIService.Runtime {
         defaultTranslationEngine = s.defaultTranslationEngine
         translationEngineChain = s.translationEngineChain
         showReadArticles = s.showReadArticles
+        showUnreadCount = s.showUnreadCount
         translationPrompt = s.translationPrompt
         summaryPrompt = s.summaryPrompt
         explainPrompt = s.explainPrompt
