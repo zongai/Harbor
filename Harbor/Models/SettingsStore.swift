@@ -30,6 +30,8 @@ final class SettingsStore {
     /// 订阅列表是否显示未读数字角标（默认开启）
     var showUnreadCount: Bool = true
     var translationPrompt: String = AppStore.defaultTranslationPrompt
+    /// AI 审校润色（更高质量重译）：对照原文 + 初译
+    var translationRefinementPrompt: String = AppStore.defaultTranslationRefinementPrompt
     var summaryPrompt: String = AppStore.defaultSummaryPrompt
     var explainPrompt: String = AppStore.defaultExplainPrompt
     var readRetentionDays: Int = 7

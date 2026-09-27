@@ -87,38 +87,228 @@ enum DeepLTranslate {
     }
 }
 
-// MARK: - Google Translate (free unofficial endpoint)
+// MARK: - Google Translate（对齐 kiss-translator / fishjar）
+// 单条：gtx translate_a/single（dj=1）
+// 批量：Google2 translateHtml — 去重 + 按字符切批 + 并发池 3～5 + 按 index 回填
+// https://github.com/fishjar/kiss-translator
 
 enum GoogleTranslate {
-    /// 与 Readest 一致：全局并发闸，避免 free endpoint 被 429
-    private static let maxConcurrent = 4
-    private static let gate = RequestGate(limit: maxConcurrent)
+    private static let gtxEndpoint = "https://translate.googleapis.com/translate_a/single"
+    /// kiss Google2：网页 pa 批量 HTML API（官方前端同款 Key）
+    private static let htmlEndpoint = "https://translate-pa.googleapis.com/v1/translateHtml"
+    private static let htmlAPIKey = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520"
+    private static let userAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
 
-    /// 纯免费接口（无 Key）：
-    /// GET https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=…&dt=t&q=…
+    /// 单条 gtx 并发闸（过高易 429）
+    private static let gtxGate = RequestGate(limit: 2)
+    /// 批量 Google2 并发池（kiss 图：3～5）
+    private static let batchGate = RequestGate(limit: 4)
+    /// 每批最多段落数 / 总字符数（对齐 kiss DEFAULT_BATCH_SIZE / BATCH_LENGTH 量级）
+    private static let batchMaxItems = 20
+    private static let batchMaxChars = 8_000
+
+    // MARK: 单条（gtx）
+
     static func translate(text: String, targetLang: String = "zh-CN") async throws -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
-        let tl: String = {
-            switch targetLang.lowercased() {
-            case "zh", "zh-hans": return "zh-CN"
-            case "zh-hant": return "zh-TW"
-            default: return targetLang
-            }
-        }()
-        return try await gate.run {
-            if trimmed.utf8.count < 1800 {
+        let tl = normalizeGoogleTargetLang(targetLang)
+        return try await gtxGate.run {
+            if trimmed.utf8.count < 1500 {
                 do {
-                    return try await request(text: trimmed, targetLang: tl, method: "GET")
+                    return try await gtxRequest(text: trimmed, targetLang: tl, method: "GET")
                 } catch {
-                    return try await request(text: trimmed, targetLang: tl, method: "POST")
+                    return try await gtxRequest(text: trimmed, targetLang: tl, method: "POST")
                 }
             }
-            return try await request(text: trimmed, targetLang: tl, method: "POST")
+            return try await gtxRequest(text: trimmed, targetLang: tl, method: "POST")
         }
     }
 
-    /// 简单异步信号量：跨调用共享，防止列表翻译打爆 Google（Readest 同思路）
+    // MARK: 批量（Google2 translateHtml）
+
+    /// 去重 → 按字符切批 → 并发池 → 按 index 恢复（与 kiss 批处理流程一致）
+    static func translate(texts: [String], targetLang: String = "zh-CN") async -> [String?] {
+        guard !texts.isEmpty else { return [] }
+        let tl = normalizeGoogleTargetLang(targetLang)
+
+        var results: [String?] = Array(repeating: nil, count: texts.count)
+        var pending: [(index: Int, text: String)] = []
+        pending.reserveCapacity(texts.count)
+        for (i, t) in texts.enumerated() {
+            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                results[i] = ""
+            } else {
+                pending.append((i, t))
+            }
+        }
+        guard !pending.isEmpty else { return results }
+
+        // 去重：相同原文只请求一次
+        var uniqueOrder: [String] = []
+        var uniqueIndex: [String: Int] = [:]
+        var mapToUnique: [Int] = Array(repeating: -1, count: pending.count)
+        for (j, item) in pending.enumerated() {
+            if let u = uniqueIndex[item.text] {
+                mapToUnique[j] = u
+            } else {
+                let u = uniqueOrder.count
+                uniqueIndex[item.text] = u
+                uniqueOrder.append(item.text)
+                mapToUnique[j] = u
+            }
+        }
+
+        let batches = makeBatches(uniqueOrder, maxItems: batchMaxItems, maxChars: batchMaxChars)
+        var uniqueResults: [String?] = Array(repeating: nil, count: uniqueOrder.count)
+
+        await withTaskGroup(of: [(Int, String)].self) { group in
+            for batch in batches {
+                group.addTask {
+                    do {
+                        let outs = try await batchGate.run {
+                            try await translateHtmlBatch(texts: batch.texts, targetLang: tl)
+                        }
+                        var pairs: [(Int, String)] = []
+                        for (k, out) in outs.enumerated() where k < batch.indices.count {
+                            pairs.append((batch.indices[k], out))
+                        }
+                        return pairs
+                    } catch {
+                        return []
+                    }
+                }
+            }
+            for await pairs in group {
+                for (ui, text) in pairs {
+                    if ui >= 0, ui < uniqueResults.count {
+                        uniqueResults[ui] = text
+                    }
+                }
+            }
+        }
+
+        for (j, item) in pending.enumerated() {
+            let u = mapToUnique[j]
+            if u >= 0, u < uniqueResults.count {
+                results[item.index] = uniqueResults[u]
+            }
+        }
+        return results
+    }
+
+    private struct Batch {
+        var indices: [Int]
+        var texts: [String]
+        var chars: Int
+    }
+
+    private static func makeBatches(_ texts: [String], maxItems: Int, maxChars: Int) -> [Batch] {
+        var batches: [Batch] = []
+        var cur = Batch(indices: [], texts: [], chars: 0)
+        for (i, t) in texts.enumerated() {
+            let len = t.count
+            let wouldExceed = !cur.texts.isEmpty && (
+                cur.texts.count >= maxItems || cur.chars + len > maxChars
+            )
+            if wouldExceed {
+                batches.append(cur)
+                cur = Batch(indices: [], texts: [], chars: 0)
+            }
+            cur.indices.append(i)
+            cur.texts.append(t)
+            cur.chars += len
+        }
+        if !cur.texts.isEmpty { batches.append(cur) }
+        return batches
+    }
+
+    /// kiss `genGoogle2`：POST translateHtml，body `[[texts, from, to], "wt_lib"]`
+    private static func translateHtmlBatch(texts: [String], targetLang: String) async throws -> [String] {
+        guard !texts.isEmpty else { return [] }
+        guard let url = URL(string: htmlEndpoint) else {
+            throw TranslationError.apiError("无效的 Google2 URL")
+        }
+        let encoded = texts.map { encodeHTMLTranslationText($0) }
+        let body: [Any] = [[encoded, "auto", targetLang], "wt_lib"]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            throw TranslationError.apiError("Google2 请求体编码失败")
+        }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.httpBody = bodyData
+        request.setValue("application/json+protobuf", forHTTPHeaderField: "Content-Type")
+        request.setValue(htmlAPIKey, forHTTPHeaderField: "X-Goog-API-Key")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://translate.google.com/", forHTTPHeaderField: "Referer")
+
+        let (data, response) = try await TranslationHTTP.session.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            if http.statusCode == 429 {
+                throw TranslationError.apiError("Google 限流 (429)，请稍后再试")
+            }
+            let msg = String(data: data, encoding: .utf8) ?? ""
+            throw TranslationError.apiError("Google2 错误 \(http.statusCode): \(msg.prefix(160))")
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              let translations = root.first as? [Any],
+              translations.count == texts.count else {
+            throw TranslationError.apiError("解析 Google2 响应失败")
+        }
+        return translations.map { item -> String in
+            let raw = (item as? String) ?? ""
+            return decodeHTMLTranslationText(raw)
+        }
+    }
+
+    private static func encodeHTMLTranslationText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "<br>")
+            .replacingOccurrences(of: "\r", with: "<br>")
+            .replacingOccurrences(of: "\n", with: "<br>")
+    }
+
+    private static func decodeHTMLTranslationText(_ text: String) -> String {
+        var s = text.replacingOccurrences(
+            of: #"<br\s*/?>[\t ]*"#,
+            with: "\n",
+            options: .regularExpression
+        )
+        let entities: [(String, String)] = [
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"),
+            ("&nbsp;", " ")
+        ]
+        for (a, b) in entities {
+            s = s.replacingOccurrences(of: a, with: b)
+        }
+        return s
+    }
+
+    // MARK: gtx 单条
+
+    private static func normalizeGoogleTargetLang(_ targetLang: String) -> String {
+        switch targetLang.lowercased() {
+        case "zh", "zh-hans", "zh-cn": return "zh-CN"
+        case "zh-hant", "zh-tw": return "zh-TW"
+        default: return targetLang
+        }
+    }
+
+    private static func gtxQueryItems(text: String, targetLang: String) -> [URLQueryItem] {
+        [
+            URLQueryItem(name: "client", value: "gtx"),
+            URLQueryItem(name: "dt", value: "t"),
+            URLQueryItem(name: "dj", value: "1"),
+            URLQueryItem(name: "ie", value: "UTF-8"),
+            URLQueryItem(name: "sl", value: "auto"),
+            URLQueryItem(name: "tl", value: targetLang),
+            URLQueryItem(name: "q", value: text)
+        ]
+    }
+
     private actor RequestGate {
         private let limit: Int
         private var active = 0
@@ -143,57 +333,46 @@ enum GoogleTranslate {
             await withCheckedContinuation { cont in
                 waiters.append(cont)
             }
-            // 被唤醒时槽位已由 release 转交，不再 +1
         }
         private func release() {
             if !waiters.isEmpty {
-                let next = waiters.removeFirst()
-                next.resume()
+                waiters.removeFirst().resume()
             } else {
                 active = max(0, active - 1)
             }
         }
     }
 
-    private static func request(text: String, targetLang: String, method: String) async throws -> String {
+    private static func gtxRequest(text: String, targetLang: String, method: String) async throws -> String {
         if method == "GET" {
-            var comps = URLComponents(string: "https://translate.googleapis.com/translate_a/single")!
-            comps.queryItems = [
-                URLQueryItem(name: "client", value: "gtx"),
-                URLQueryItem(name: "sl", value: "auto"),
-                URLQueryItem(name: "tl", value: targetLang),
-                URLQueryItem(name: "dt", value: "t"),
-                URLQueryItem(name: "q", value: text)
-            ]
+            var comps = URLComponents(string: gtxEndpoint)!
+            comps.queryItems = gtxQueryItems(text: text, targetLang: targetLang)
             guard let url = comps.url else { throw TranslationError.apiError("无效的 Google URL") }
-            var request = URLRequest(url: url, timeoutInterval: 15)
+            var request = URLRequest(url: url, timeoutInterval: 18)
             request.httpMethod = "GET"
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
-            return try await parse(request)
+            request.setValue("https://translate.google.com/", forHTTPHeaderField: "Referer")
+            return try await parseGTX(request)
         } else {
-            guard let url = URL(string: "https://translate.googleapis.com/translate_a/single") else {
-                throw TranslationError.apiError("无效的URL")
+            guard let url = URL(string: gtxEndpoint) else {
+                throw TranslationError.apiError("无效的 Google URL")
             }
-            var request = URLRequest(url: url, timeoutInterval: 15)
+            var request = URLRequest(url: url, timeoutInterval: 18)
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded;charset=UTF-8", forHTTPHeaderField: "Content-Type")
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("https://translate.google.com/", forHTTPHeaderField: "Referer")
             var body = URLComponents()
-            body.queryItems = [
-                URLQueryItem(name: "client", value: "gtx"),
-                URLQueryItem(name: "sl", value: "auto"),
-                URLQueryItem(name: "tl", value: targetLang),
-                URLQueryItem(name: "dt", value: "t"),
-                URLQueryItem(name: "q", value: text)
-            ]
+            body.queryItems = gtxQueryItems(text: text, targetLang: targetLang)
             request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
-            return try await parse(request)
+            return try await parseGTX(request)
         }
     }
 
-    private static func parse(_ request: URLRequest) async throws -> String {
-        let (data, response) = try await URLSession.shared.data(for: request)
+    private static func parseGTX(_ request: URLRequest) async throws -> String {
+        let (data, response) = try await TranslationHTTP.session.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             if http.statusCode == 429 {
                 throw TranslationError.apiError("Google 限流 (429)，请稍后再试")
@@ -204,19 +383,28 @@ enum GoogleTranslate {
            raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("<!") {
             throw TranslationError.apiError("Google 限流 (429)，请稍后再试")
         }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [Any],
-              let firstElement = json.first as? [Any] else {
-            throw TranslationError.apiError("解析 Google 响应失败")
+        if let result = parseDJ1(data) ?? parseNestedArray(data), !result.isEmpty {
+            return result
         }
-        let result = firstElement.compactMap { segment -> String? in
+        throw TranslationError.apiError("解析 Google 响应失败")
+    }
+
+    private static func parseDJ1(_ data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sentences = obj["sentences"] as? [[String: Any]] else { return nil }
+        let joined = sentences.compactMap { $0["trans"] as? String }.joined()
+        return joined.isEmpty ? nil : joined
+    }
+
+    private static func parseNestedArray(_ data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [Any],
+              let firstElement = json.first as? [Any] else { return nil }
+        let joined = firstElement.compactMap { segment -> String? in
             guard let segArray = segment as? [Any],
                   let text = segArray.first as? String else { return nil }
             return text
         }.joined()
-        if result.isEmpty {
-            throw TranslationError.apiError("Google 返回空译文")
-        }
-        return result
+        return joined.isEmpty ? nil : joined
     }
 }
 
@@ -1259,15 +1447,21 @@ enum YandexTranslate {
     }
 }
 
-// MARK: - Azure/Bing（免 Key，Bing Translator 网页接口，参考 Readest）
+// MARK: - Azure/Bing（免 Key）
+// 优先：Edge 内部批量接口（kiss Microsoft 同款，一次多段）
+// 回退：Bing 网页 token（单条，鉴权失效时）
 
 enum AzureBingTranslate {
+    private static let edgeEndpoint = "https://edge.microsoft.com/translate/translatetext"
     private static let pageURL = URL(string: "https://www.bing.com/translator")!
     private static let translatePath = "/ttranslatev3"
     private static let ua =
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
     private static let maxChars = 1000
-    private static let gate = AsyncGate(limit: 6)
+    private static let batchMaxItems = 20
+    private static let batchMaxChars = 5_000
+    private static let edgeGate = AsyncGate(limit: 4)
+    private static let webGate = AsyncGate(limit: 4)
 
     private struct Auth {
         var ig: String
@@ -1281,20 +1475,160 @@ enum AzureBingTranslate {
     private static var cached: Auth?
     private static let lock = NSLock()
 
+    // MARK: 单条
+
     static func translate(text: String, targetLang: String = "zh-Hans") async throws -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         let tl = normalizeLang(targetLang)
+        // 优先 Edge；失败再网页 token
+        do {
+            let outs = try await edgeGate.run {
+                try await edgeTranslateBatch(texts: [trimmed], targetLang: tl)
+            }
+            if let first = outs.first, !first.isEmpty { return first }
+        } catch {
+            // fall through
+        }
         let chunks = chunk(trimmed, max: maxChars)
         var parts: [String] = []
         for c in chunks {
-            let p = try await gate.run {
-                try await translateChunk(c, to: tl, retry: true)
+            let p = try await webGate.run {
+                try await webTranslateChunk(c, to: tl, retry: true)
             }
             parts.append(p)
         }
         return parts.joined()
     }
+
+    // MARK: 批量（列表 / 多段）— 去重 + 切批 + 并发 + 按 index 回填
+
+    static func translate(texts: [String], targetLang: String = "zh-Hans") async -> [String?] {
+        guard !texts.isEmpty else { return [] }
+        let tl = normalizeLang(targetLang)
+        var results: [String?] = Array(repeating: nil, count: texts.count)
+        var pending: [(index: Int, text: String)] = []
+        for (i, t) in texts.enumerated() {
+            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                results[i] = ""
+            } else {
+                pending.append((i, t))
+            }
+        }
+        guard !pending.isEmpty else { return results }
+
+        var uniqueOrder: [String] = []
+        var uniqueIndex: [String: Int] = [:]
+        var mapToUnique: [Int] = Array(repeating: -1, count: pending.count)
+        for (j, item) in pending.enumerated() {
+            if let u = uniqueIndex[item.text] {
+                mapToUnique[j] = u
+            } else {
+                let u = uniqueOrder.count
+                uniqueIndex[item.text] = u
+                uniqueOrder.append(item.text)
+                mapToUnique[j] = u
+            }
+        }
+
+        let batches = makeBatches(uniqueOrder, maxItems: batchMaxItems, maxChars: batchMaxChars)
+        var uniqueResults: [String?] = Array(repeating: nil, count: uniqueOrder.count)
+
+        await withTaskGroup(of: [(Int, String)].self) { group in
+            for batch in batches {
+                group.addTask {
+                    do {
+                        let outs = try await edgeGate.run {
+                            try await edgeTranslateBatch(texts: batch.texts, targetLang: tl)
+                        }
+                        var pairs: [(Int, String)] = []
+                        for (k, out) in outs.enumerated() where k < batch.indices.count && !out.isEmpty {
+                            pairs.append((batch.indices[k], out))
+                        }
+                        return pairs
+                    } catch {
+                        return []
+                    }
+                }
+            }
+            for await pairs in group {
+                for (ui, text) in pairs {
+                    if ui >= 0, ui < uniqueResults.count {
+                        uniqueResults[ui] = text
+                    }
+                }
+            }
+        }
+
+        for (j, item) in pending.enumerated() {
+            let u = mapToUnique[j]
+            if u >= 0, u < uniqueResults.count {
+                results[item.index] = uniqueResults[u]
+            }
+        }
+        return results
+    }
+
+    private struct Batch {
+        var indices: [Int]
+        var texts: [String]
+        var chars: Int
+    }
+
+    private static func makeBatches(_ texts: [String], maxItems: Int, maxChars: Int) -> [Batch] {
+        var batches: [Batch] = []
+        var cur = Batch(indices: [], texts: [], chars: 0)
+        for (i, t) in texts.enumerated() {
+            let len = t.count
+            if !cur.texts.isEmpty && (cur.texts.count >= maxItems || cur.chars + len > maxChars) {
+                batches.append(cur)
+                cur = Batch(indices: [], texts: [], chars: 0)
+            }
+            cur.indices.append(i)
+            cur.texts.append(t)
+            cur.chars += len
+        }
+        if !cur.texts.isEmpty { batches.append(cur) }
+        return batches
+    }
+
+    /// kiss `genMicrosoft`：POST edge.microsoft.com/translate/translatetext
+    private static func edgeTranslateBatch(texts: [String], targetLang: String) async throws -> [String] {
+        guard !texts.isEmpty else { return [] }
+        var comps = URLComponents(string: edgeEndpoint)!
+        comps.queryItems = [
+            URLQueryItem(name: "from", value: ""),
+            URLQueryItem(name: "to", value: targetLang),
+            URLQueryItem(name: "isEnterpriseClient", value: "false")
+        ]
+        guard let url = comps.url else { throw TranslationError.apiError("Bing Edge URL 无效") }
+        var req = URLRequest(url: url, timeoutInterval: 25)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(ua, forHTTPHeaderField: "User-Agent")
+        req.httpBody = try JSONSerialization.data(withJSONObject: texts)
+
+        let (data, response) = try await TranslationHTTP.session.data(for: req)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            if http.statusCode == 429 {
+                throw TranslationError.apiError("Bing 限流 (429)")
+            }
+            let msg = String(data: data, encoding: .utf8) ?? ""
+            throw TranslationError.apiError("Bing Edge \(http.statusCode): \(msg.prefix(120))")
+        }
+        // [{ detectedLanguage, translations: [{ text, to }] }, ...]
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              arr.count == texts.count else {
+            throw TranslationError.apiError("Bing Edge 响应无效")
+        }
+        return arr.map { item in
+            let translations = item["translations"] as? [[String: Any]]
+            return (translations?.first?["text"] as? String) ?? ""
+        }
+    }
+
+    // MARK: 网页 token 回退
 
     private static func normalizeLang(_ lang: String) -> String {
         let l = lang.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1308,7 +1642,6 @@ enum AzureBingTranslate {
         case "de", "de-de": return "de"
         case "es", "es-es": return "es"
         default:
-            // Bing 拒 en-US 这类 culture，尽量取主语言
             if let dash = l.firstIndex(of: "-") {
                 return String(l[..<dash])
             }
@@ -1328,7 +1661,7 @@ enum AzureBingTranslate {
         return out
     }
 
-    private static func translateChunk(_ text: String, to: String, retry: Bool) async throws -> String {
+    private static func webTranslateChunk(_ text: String, to: String, retry: Bool) async throws -> String {
         let auth = try await getAuth()
         var comps = URLComponents()
         comps.scheme = "https"
@@ -1359,16 +1692,15 @@ enum AzureBingTranslate {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             if retry {
                 invalidateAuth()
-                return try await translateChunk(text, to: to, retry: false)
+                return try await webTranslateChunk(text, to: to, retry: false)
             }
             throw TranslationError.apiError("Bing 错误 \(http.statusCode)")
         }
-        // statusCode 可能嵌在 JSON 里（如 205 过期）
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let code = obj["statusCode"] as? Int, code != 200 {
             if code == 205, retry {
                 invalidateAuth()
-                return try await translateChunk(text, to: to, retry: false)
+                return try await webTranslateChunk(text, to: to, retry: false)
             }
             throw TranslationError.apiError("Bing status \(code)")
         }

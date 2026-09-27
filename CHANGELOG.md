@@ -28,6 +28,24 @@
 
 ## [Unreleased]
 
+## [1.3-116] — feature/epub-opds
+
+相对：`v1.3-115`
+
+### Added
+- **更高质量重新翻译**：机器初译后由 AI 对照原文审校润色；设置中可编辑「审校 Prompt」
+- Google / Azure·Bing **批量翻译**路径（列表与长文分段）
+
+### Changed
+- 设置页移除 OPML 导入/导出（订阅页保留）
+- DeepL 多 Key：低并发粘性顺序（额度 456 再换钥）；高并发 Round Robin + 429 冷却 + 456 剔除
+- Keychain 写入先清同步/本机变体，避免改 Key 后仍读到旧条目
+- 订阅列表源级能力改为图标徽章（全文 / 前缀 / 自动译）
+
+### Fixed
+- Foreign Affairs 配图请求补 Referer
+
+
 ## [1.3-115] — feature/epub-opds
 
 相对：`v1.3-114`

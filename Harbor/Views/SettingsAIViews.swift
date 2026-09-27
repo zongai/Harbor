@@ -154,6 +154,20 @@ struct AISettingsView: View {
             }
 
             Section {
+                TextEditor(text: $settings.translationRefinementPrompt)
+                    .font(.system(size: 14, design: .monospaced))
+                    .frame(minHeight: 140)
+                Button("恢复默认审校 Prompt") {
+                    store.translationRefinementPrompt = AppStore.defaultTranslationRefinementPrompt
+                    store.persistSettings()
+                }
+            } header: {
+                Text("提示词 · 更高质量重译（AI 审校）")
+            } footer: {
+                Text("阅读页「更高质量重新翻译」：先机器初译，再由 AI 对照原文审校。占位符：{{source}} / {{SOURCE_TEXT}} 原文，{{translation}} / {{INITIAL_TRANSLATION}} 初译，{{lang}} 目标语言。只应要求模型输出最终译文。")
+            }
+
+            Section {
                 TextEditor(text: $settings.explainPrompt)
                     .font(.system(size: 14, design: .monospaced))
                     .frame(minHeight: 110)
@@ -198,6 +212,7 @@ struct AISettingsView: View {
         .appFormChrome()
         .onDisappear { store.persistSettings() }
         .onChange(of: store.translationPrompt) { _, _ in store.persistSettings() }
+        .onChange(of: store.translationRefinementPrompt) { _, _ in store.persistSettings() }
         .onChange(of: store.summaryPrompt) { _, _ in store.persistSettings() }
         .onChange(of: store.explainPrompt) { _, _ in store.persistSettings() }
         .onChange(of: store.globalSummaryPresetID) { _, _ in store.persistSettings() }

@@ -1770,6 +1770,8 @@ struct DownsampledArticleImage: View {
                     request.setValue("https://cn.nytimes.com/", forHTTPHeaderField: "Referer")
                 } else if host.contains("substack") {
                     request.setValue("https://substack.com/", forHTTPHeaderField: "Referer")
+                } else if host.contains("foreignaffairs.com") {
+                    request.setValue("https://www.foreignaffairs.com/", forHTTPHeaderField: "Referer")
                 } else if let scheme = url.scheme {
                     request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
                 }

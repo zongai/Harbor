@@ -828,10 +828,10 @@ struct FeedRow: View {
                         .lineLimit(1)
                     HStack(spacing: 6) {
                         if CommentFetcher.isSubstackLike(feed: live) {
-                            Image(systemName: "newspaper")
-                                .font(.system(size: 8, weight: .semibold))
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(Color(.systemBackground))
-                                .padding(.horizontal, 4)
+                                .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
                                 .background(Color.orange.opacity(0.9), in: Capsule())
                                 .accessibilityLabel("Substack 源")
@@ -841,20 +841,24 @@ struct FeedRow: View {
                                 .font(AppTypography.caption())
                                 .foregroundStyle(theme.muted)
                         }
-                        if !live.fetchFullContentEnabled {
-                            Text("全文关")
-                                .font(AppTypography.caption())
+                        // 仅功能开启时显示图标（含默认开启）
+                        if live.fetchFullContentEnabled {
+                            Image(systemName: "doc.richtext")
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(theme.muted)
+                                .accessibilityLabel("全文获取已开启")
                         }
                         if store.fullContentURLPrefixEnabled && live.useFullContentURLPrefix {
-                            Text("前缀")
-                                .font(AppTypography.caption())
+                            Image(systemName: "link.badge.plus")
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(theme.muted)
+                                .accessibilityLabel("全文 URL 前缀已开启")
                         }
                         if live.autoTranslateEnabled {
-                            Text("自动译")
-                                .font(AppTypography.caption())
-                                .foregroundStyle(theme.muted.opacity(0.85))
+                            Image(systemName: "translate")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(theme.muted)
+                                .accessibilityLabel("自动翻译已开启")
                         }
                     }
                     // 刷新失败原因：直接显示在源标题下方，便于对照

@@ -1074,7 +1074,8 @@ enum ArticleContentFetcher {
             }
         }
         if let best, host == "foreignaffairs.com" || host.hasSuffix(".foreignaffairs.com") {
-            return sanitizeForeignAffairsBody(best)
+            // 题图在 topper__image，不在 paywall-content 正文内
+            return sanitizeForeignAffairsBody(best, pageHTML: html)
         }
         if let best, host == "phys.org" || host.hasSuffix(".phys.org") {
             return sanitizePhysOrgBody(best)
@@ -1350,8 +1351,8 @@ enum ArticleContentFetcher {
         return (textLen >= 80 || imgCount >= 1) ? work : html
     }
 
-    /// Foreign Affairs：去掉订阅 CTA、JS 提示，保留段落正文
-    private static func sanitizeForeignAffairsBody(_ html: String) -> String {
+    /// Foreign Affairs：去掉订阅 CTA、JS 提示；补回 topper 题图（正文区本身无 img）
+    private static func sanitizeForeignAffairsBody(_ html: String, pageHTML: String? = nil) -> String {
         var work = truncateArticleTail(html)
         // 去掉文末 Loading / enable JavaScript 行
         work = work.replacingOccurrences(
@@ -1370,8 +1371,118 @@ enum ArticleContentFetcher {
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
+        // 正文块通常 0 图；从整页 topper / og:image 前置题图
+        if work.lowercased().components(separatedBy: "<img").count - 1 < 1 {
+            if let page = pageHTML, let lead = extractForeignAffairsLeadImage(from: page) {
+                work = lead + "\n" + work
+            }
+        } else {
+            work = promoteForeignAffairsImageURLs(work)
+        }
         let textLen = HTMLUtils.stripTags(work).trimmingCharacters(in: .whitespacesAndNewlines).count
         return textLen >= 200 ? work : html
+    }
+
+    /// 提取 FA 文首题图（`topper__image` / topper 容器），并提升为清晰大图 src
+    private static func extractForeignAffairsLeadImage(from pageHTML: String) -> String? {
+        // 1) topper__image 的 img 标签
+        var imgTag: String?
+        if let re = try? NSRegularExpression(
+            pattern: #"<img\b[^>]*class=["'][^"']*\btopper__image\b[^"']*["'][^>]*>"#,
+            options: .caseInsensitive
+        ),
+           let m = re.firstMatch(in: pageHTML, range: NSRange(location: 0, length: (pageHTML as NSString).length)),
+           let r = Range(m.range, in: pageHTML) {
+            imgTag = String(pageHTML[r])
+        }
+        // 2) topper__image-container 内的首个 img
+        if imgTag == nil,
+           let re = try? NSRegularExpression(
+            pattern: #"<div\b[^>]*class=["'][^"']*\btopper__image-container\b[^"']*["'][^>]*>[\s\S]{0,4000}?<img\b[^>]*>"#,
+            options: .caseInsensitive
+           ),
+           let m = re.firstMatch(in: pageHTML, range: NSRange(location: 0, length: (pageHTML as NSString).length)),
+           let r = Range(m.range, in: pageHTML) {
+            let block = String(pageHTML[r])
+            if let im = matchFirst(#"(<img\b[^>]*>)"#, in: block) {
+                imgTag = im
+            }
+        }
+        if let tag = imgTag {
+            let promoted = promoteSingleImageTag(tag)
+            let src = imageSrc(from: promoted) ?? imageSrc(from: tag)
+            if let src, !src.isEmpty, !src.hasPrefix("data:") {
+                let large = preferForeignAffairsLargeImageURL(src)
+                let alt = matchFirst(#"alt=["']([^"']*)["']"#, in: tag) ?? ""
+                let escAlt = alt
+                    .replacingOccurrences(of: "\"", with: "&quot;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                return "<figure><img src=\"\(large)\" alt=\"\(escAlt)\"></figure>"
+            }
+        }
+        // 3) og:image 回退（通常为 social_share 尺寸，仍可用）
+        if let og = matchFirst(
+            #"<meta\b[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']"#,
+            in: pageHTML
+        ) ?? matchFirst(
+            #"<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']"#,
+            in: pageHTML
+        ), !og.isEmpty {
+            let large = preferForeignAffairsLargeImageURL(og)
+            return "<figure><img src=\"\(large)\" alt=\"\"></figure>"
+        }
+        return nil
+    }
+
+    /// 将 FA CDN 小图样式升为 x_large_2x / large_2x
+    private static func preferForeignAffairsLargeImageURL(_ url: String) -> String {
+        guard url.contains("foreignaffairs.com") || url.contains("/styles/") else { return url }
+        var u = url
+        // 优先替换为最大可用样式
+        let upgrades: [(String, String)] = [
+            ("_webp_small_1x", "_webp_x_large_2x"),
+            ("_webp_small_2x", "_webp_x_large_2x"),
+            ("_webp_medium_1x", "_webp_x_large_2x"),
+            ("_webp_medium_2x", "_webp_x_large_2x"),
+            ("_webp_large_1x", "_webp_x_large_2x"),
+            ("_webp_large_2x", "_webp_x_large_2x"),
+            ("social_share", "_webp_x_large_2x"),
+            ("webp_card_square_100", "_webp_x_large_2x"),
+            ("webp_card_square_200", "_webp_x_large_2x"),
+            ("webp_card_landscape_200x120", "_webp_x_large_2x"),
+            ("webp_card_landscape_600x400", "_webp_x_large_2x")
+        ]
+        for (from, to) in upgrades {
+            if u.contains("/styles/\(from)/") {
+                u = u.replacingOccurrences(of: "/styles/\(from)/", with: "/styles/\(to)/")
+                break
+            }
+        }
+        return u
+    }
+
+    private static func promoteForeignAffairsImageURLs(_ html: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"<img\b[^>]*>"#, options: .caseInsensitive) else {
+            return html
+        }
+        let ns = html as NSString
+        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length)).reversed()
+        var work = html
+        for m in matches {
+            guard let range = Range(m.range, in: work) else { continue }
+            let tag = String(work[range])
+            var promoted = promoteSingleImageTag(tag)
+            if let src = imageSrc(from: promoted) {
+                let large = preferForeignAffairsLargeImageURL(src)
+                if large != src {
+                    promoted = promoted.replacingOccurrences(of: src, with: large)
+                }
+            }
+            if promoted != tag {
+                work.replaceSubrange(range, with: promoted)
+            }
+        }
+        return work
     }
 
     /// 去掉正文末尾的推荐阅读、评论、邮件订阅等尾巴（仅截后半段命中，避免误伤正文）
@@ -1680,6 +1791,8 @@ enum ArticleContentFetcher {
             "paywall-free-article", "paywall-modal", "paywall-overlay",
             "js--fa-overlay", "newsletter-backdrop", "article-tools"
         ])
+        // BBC 中文等：正文中间插入的「熱讀 / 热读」推荐列表
+        work = stripInlineRecommendationBlocks(work)
         // 去掉仅含空白的标签与连续空段落，减少阅读页大片留白
         work = work.replacingOccurrences(
             of: #"<p[^>]*>\s*(?:&nbsp;|\u{00A0}|\s)*\s*</p>"#,
@@ -1977,6 +2090,75 @@ enum ArticleContentFetcher {
             if let inner = extractBalancedFromOpen(work, openEnd: afterOpen, tag: tag) {
                 let contentEnd = work.index(afterOpen, offsetBy: inner.count)
                 let closePattern = "</\(tag)>"
+                if let close = work.range(of: closePattern, options: .caseInsensitive, range: contentEnd..<work.endIndex) {
+                    work.removeSubrange(openStart..<close.upperBound)
+                } else {
+                    work.removeSubrange(openStart..<contentEnd)
+                }
+            } else {
+                work.removeSubrange(fullOpen)
+            }
+        }
+        return work
+    }
+
+    /// 去掉正文中间的推荐/热读块（BBC 中文 `data-e2e="recommendations-heading"` 等）
+    private static func stripInlineRecommendationBlocks(_ html: String) -> String {
+        var work = html
+        // 1) 按 data-e2e / aria 标记整段 section/aside 移除
+        let attrOpenPatterns = [
+            #"<section\b[^>]*data-e2e=["']recommendations-heading["'][^>]*>"#,
+            #"<section\b[^>]*aria-labelledby=["']recommendations-heading["'][^>]*>"#,
+            #"<section\b[^>]*data-e2e=["']most-read["'][^>]*>"#,
+            #"<section\b[^>]*data-testid=["']most-read["'][^>]*>"#,
+            #"<aside\b[^>]*data-e2e=["']recommendations-heading["'][^>]*>"#,
+            #"<div\b[^>]*data-e2e=["']recommendations-heading["'][^>]*>"#
+        ]
+        for pat in attrOpenPatterns {
+            work = removeBalancedBlocksMatchingOpen(work, openPattern: pat)
+        }
+        // 2) 兜底：Skip 熱讀 … End of 熱讀 / 热读 包裹区（标签被改写时仍可切掉）
+        let spanPatterns = [
+            #"(?is)<(?:section|div|aside)\b[^>]*>[\s\S]{0,400}?Skip\s*(?:熱讀|热读)[\s\S]*?End of\s*(?:熱讀|热读)[\s\S]*?</(?:section|div|aside)>"#,
+            #"(?is)<p[^>]*>\s*(?:End of\s*)?(?:熱讀|热读)\s*</p>"#,
+            #"(?is)<a\b[^>]*>\s*Skip\s*(?:熱讀|热读)[^<]*</a>"#,
+            #"(?is)<(?:h2|h3|strong|span)\b[^>]*>\s*(?:熱讀|热读)\s*</(?:h2|h3|strong|span)>"#
+        ]
+        for pat in spanPatterns {
+            work = work.replacingOccurrences(of: pat, with: "", options: .regularExpression)
+        }
+        // 3) 孤立的 end-of-recommendations 锚点
+        work = work.replacingOccurrences(
+            of: #"<[^>]+id=["']end-of-recommendations["'][^>]*>[\s\S]*?</[^>]+>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return work
+    }
+
+    /// 匹配开标签后按同名标签平衡删除整块
+    private static func removeBalancedBlocksMatchingOpen(_ html: String, openPattern: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: openPattern, options: .caseInsensitive) else {
+            return html
+        }
+        var work = html
+        var guardCounter = 0
+        while guardCounter < 20 {
+            guardCounter += 1
+            let ns = work as NSString
+            guard let match = regex.firstMatch(in: work, range: NSRange(location: 0, length: ns.length)),
+                  let fullOpen = Range(match.range, in: work) else { break }
+            let openTag = String(work[fullOpen])
+            let tagName: String = {
+                if openTag.lowercased().hasPrefix("<section") { return "section" }
+                if openTag.lowercased().hasPrefix("<aside") { return "aside" }
+                return "div"
+            }()
+            let openStart = fullOpen.lowerBound
+            let afterOpen = fullOpen.upperBound
+            if let inner = extractBalancedFromOpen(work, openEnd: afterOpen, tag: tagName) {
+                let contentEnd = work.index(afterOpen, offsetBy: inner.count)
+                let closePattern = "</\(tagName)>"
                 if let close = work.range(of: closePattern, options: .caseInsensitive, range: contentEnd..<work.endIndex) {
                     work.removeSubrange(openStart..<close.upperBound)
                 } else {

@@ -809,27 +809,63 @@ enum Keychain {
     private static let service = "com.example.Harbor.keys"
     private static let legacyPrefix = "feed_kc_"
 
+    /// 写入钥匙串。必须先清掉 **可同步 + 本机** 全部变体，否则旧的 iCloud 同步条目删不掉，
+    /// `load` 又优先读同步项，会出现「改了 Key 列表重新打开仍是旧的 13 个」这类问题。
     static func save(key: String, value: String) {
         let data = Data(value.utf8)
-        let query: [String: Any] = [
+        // 彻底删除同步/本机/未标记 三种条目，避免 Duplicate + 读到旧值
+        delete(key: key)
+
+        let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
-        SecItemDelete(query as CFDictionary)
-        // 同步版（iCloud 钥匙串，换机自动带上 API Key）
-        var addSync = query
+
+        // 1) 优先写入可同步项（换机带 Key）
+        var addSync = base
         addSync[kSecValueData as String] = data
         addSync[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         addSync[kSecAttrSynchronizable as String] = kCFBooleanTrue!
-        let syncStatus = SecItemAdd(addSync as CFDictionary, nil)
-        if syncStatus != errSecSuccess {
-            // 设备不支持 iCloud 钥匙串时回退本机
-            var addLocal = query
-            addLocal[kSecValueData as String] = data
-            addLocal[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            addLocal[kSecAttrSynchronizable as String] = kCFBooleanFalse!
-            SecItemAdd(addLocal as CFDictionary, nil)
+        var syncStatus = SecItemAdd(addSync as CFDictionary, nil)
+        if syncStatus == errSecDuplicateItem {
+            // 删除未净时改为更新
+            let q: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: key,
+                kSecAttrSynchronizable as String: kCFBooleanTrue!
+            ]
+            syncStatus = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+        if syncStatus == errSecSuccess {
+            UserDefaults.standard.removeObject(forKey: legacyPrefix + key)
+            return
+        }
+
+        // 2) 同步失败（无 iCloud 钥匙串等）→ 本机项
+        var addLocal = base
+        addLocal[kSecValueData as String] = data
+        addLocal[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        addLocal[kSecAttrSynchronizable as String] = kCFBooleanFalse!
+        var localStatus = SecItemAdd(addLocal as CFDictionary, nil)
+        if localStatus == errSecDuplicateItem {
+            let q: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: key,
+                kSecAttrSynchronizable as String: kCFBooleanFalse!
+            ]
+            localStatus = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+        if localStatus != errSecSuccess {
+            // 3) 最后兜底：无 synchronizable 标记的旧式条目
+            var addPlain = base
+            addPlain[kSecValueData as String] = data
+            addPlain[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            if SecItemAdd(addPlain as CFDictionary, nil) == errSecDuplicateItem {
+                SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            }
         }
         UserDefaults.standard.removeObject(forKey: legacyPrefix + key)
     }
@@ -864,7 +900,7 @@ enum Keychain {
         let status = SecItemCopyMatching(legacyQuery as CFDictionary, &item)
         if status == errSecSuccess, let data = item as? Data,
            let s = String(data: data, encoding: .utf8), !s.isEmpty {
-            // 升级为可同步
+            // 升级为可同步（会覆盖写回）
             save(key: key, value: s)
             return s
         }
@@ -878,6 +914,7 @@ enum Keychain {
     }
 
     static func delete(key: String) {
+        // iCloud 同步项必须显式带 synchronizable，否则删不掉
         for sync in [true, false] {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
@@ -887,12 +924,20 @@ enum Keychain {
             ]
             SecItemDelete(query as CFDictionary)
         }
-        let query: [String: Any] = [
+        // kSecAttrSynchronizableAny：覆盖同步与非同步
+        let anyQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny
+        ]
+        SecItemDelete(anyQuery as CFDictionary)
+        let plain: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
-        SecItemDelete(query as CFDictionary)
+        SecItemDelete(plain as CFDictionary)
         UserDefaults.standard.removeObject(forKey: legacyPrefix + key)
     }
 }

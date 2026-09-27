@@ -165,7 +165,7 @@ struct TranslationSettingsView: View {
                 testButton(for: .deepl)
             } header: { Text("DeepL（多 Key）") }
             footer: {
-                Text("支持一次粘贴多个 Key（换行、逗号、分号或空格分隔），自动去重。多 Key 轮询；无效 Key 跳过约 1 小时，限流约 5 分钟；全部失败回退 Google。")
+                Text("支持一次粘贴多个 Key（换行、逗号、分号或空格分隔），自动去重。低并发：固定顺序，额度耗尽（456）再换下一把；高并发：轮询分配，429 冷却约 5 分钟，456 本会话剔除。无效 Key 约 1 小时；全部失败回退 Google。")
             }
 
             // MyMemory

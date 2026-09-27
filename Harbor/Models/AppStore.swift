@@ -133,6 +133,11 @@ class AppStore: AIService.Runtime {
         set { settings.translationPrompt = newValue }
     }
 
+    var translationRefinementPrompt: String {
+        get { settings.translationRefinementPrompt }
+        set { settings.translationRefinementPrompt = newValue }
+    }
+
     var summaryPrompt: String {
         get { settings.summaryPrompt }
         set { settings.summaryPrompt = newValue }
@@ -321,6 +326,25 @@ class AppStore: AIService.Runtime {
 - 若原文含 [[IMG_数字]] 等占位符，原样保留
 
 {{text}}
+"""
+
+    /// 更高质量重译：机器初译 + AI 对照原文审校（占位符见设置说明）
+    static let defaultTranslationRefinementPrompt = """
+你是翻译审校。根据【原文】校对并润色【初译】，输出最终{{lang}}译文。
+
+原则：
+- 以原文含义为准；初译只是草稿，有冲突时按原文改
+- 准确：不增删事实、数字、专名与逻辑；已准确自然则少改
+- 自然：消除翻译腔，符合{{lang}}表达习惯
+- 一致：术语、人名、机构译名前后统一
+- 保格式：换行、列表、[[IMG_数字]]、URL、代码与 {{变量}} 等占位符原样保留
+- 只输出最终译文，不要解释、标题或引号包裹
+
+【原文】
+{{source}}
+
+【初译】
+{{translation}}
 """
 
     static let defaultSummaryPrompt = """
@@ -2119,12 +2143,22 @@ class AppStore: AIService.Runtime {
 
     func loadDeepLKeys() -> [String] {
         let multiKey = "deepl_translate_keys"
-        if let raw = Keychain.load(key: multiKey), !raw.isEmpty,
-           let data = raw.data(using: .utf8),
-           let arr = try? JSONDecoder().decode([String].self, from: data) {
-            return arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if let raw = Keychain.load(key: multiKey), !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let arr = try? JSONDecoder().decode([String].self, from: data) {
+                return arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            }
+            // 兼容误存成换行拼接
+            let parts = raw.components(separatedBy: CharacterSet.newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if parts.count > 1 { return parts }
         }
         let legacy = Keychain.load(key: "deepl_translate_key") ?? ""
+        let legacyParts = legacy.components(separatedBy: CharacterSet.newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if legacyParts.count > 1 { return legacyParts }
         let one = legacy.trimmingCharacters(in: .whitespacesAndNewlines)
         return one.isEmpty ? [] : [one]
     }
@@ -2136,15 +2170,26 @@ class AppStore: AIService.Runtime {
             .filter { !$0.isEmpty }
             .filter { seen.insert($0).inserted }
         let multiKey = "deepl_translate_keys"
+        let legacyKey = "deepl_translate_key"
         if cleaned.isEmpty {
             Keychain.delete(key: multiKey)
-            Keychain.delete(key: "deepl_translate_key")
+            Keychain.delete(key: legacyKey)
             return
         }
-        if let data = try? JSONEncoder().encode(cleaned), let raw = String(data: data, encoding: .utf8) {
-            Keychain.save(key: multiKey, value: raw)
+        guard let data = try? JSONEncoder().encode(cleaned),
+              let raw = String(data: data, encoding: .utf8) else {
+            Keychain.save(key: legacyKey, value: cleaned.joined(separator: "\n"))
+            return
         }
-        Keychain.save(key: "deepl_translate_key", value: cleaned[0])
+        Keychain.save(key: multiKey, value: raw)
+        Keychain.save(key: legacyKey, value: cleaned[0])
+        // 回读校验：钥匙串同步竞态时再强制写一次
+        if loadDeepLKeys() != cleaned {
+            Keychain.delete(key: multiKey)
+            Keychain.delete(key: legacyKey)
+            Keychain.save(key: multiKey, value: raw)
+            Keychain.save(key: legacyKey, value: cleaned[0])
+        }
     }
 
     // MARK: - Google / Microsoft 多 Key
@@ -2179,16 +2224,29 @@ class AppStore: AIService.Runtime {
     }
 
     private func saveMultiKeys(_ keys: [String], multiKey: String, legacyKey: String) {
-        let cleaned = keys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        var seen = Set<String>()
+        let cleaned = keys
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0).inserted }
         if cleaned.isEmpty {
             Keychain.delete(key: multiKey)
             Keychain.delete(key: legacyKey)
             return
         }
-        if let data = try? JSONEncoder().encode(cleaned), let raw = String(data: data, encoding: .utf8) {
-            Keychain.save(key: multiKey, value: raw)
+        guard let data = try? JSONEncoder().encode(cleaned),
+              let raw = String(data: data, encoding: .utf8) else {
+            Keychain.save(key: legacyKey, value: cleaned.joined(separator: "\n"))
+            return
         }
+        Keychain.save(key: multiKey, value: raw)
         Keychain.save(key: legacyKey, value: cleaned[0])
+        if loadMultiKeys(multiKey: multiKey, legacyKey: legacyKey) != cleaned {
+            Keychain.delete(key: multiKey)
+            Keychain.delete(key: legacyKey)
+            Keychain.save(key: multiKey, value: raw)
+            Keychain.save(key: legacyKey, value: cleaned[0])
+        }
     }
 
     func translateWithGoogle(_ text: String, targetLang: String) async throws -> String {
@@ -2221,29 +2279,102 @@ class AppStore: AIService.Runtime {
     }
 
 
-    private var deeplKeyRoundRobin: Int = 0
+    // MARK: - DeepL 多 Key 调度
+    // 低并发：固定顺序 + 额度耗尽（456）再切换下一把（粘性）
+    // 高并发：Round Robin + 429 短冷却 + 456 自动剔除 + 成功次数统计
 
-    /// DeepL：多 Key 轮询；配额/鉴权失败换 Key；全部失败可回退其它引擎
+    private var deeplKeyRoundRobin: Int = 0
+    /// 低并发粘性：当前固定使用的 Key 在全量列表中的下标
+    private var deeplStickyIndex: Int = 0
+    /// 成功请求计数（指纹 → 次数），便于观察各 Key 用量
+    private var deeplKeySuccessCount: [String: Int] = [:]
+
+    /// 并发度 > 1 视为高并发（含用户设为 0 时 DeepL 默认 3）
+    private var isDeepLHighConcurrency: Bool {
+        resolvedTranslationConcurrency(for: .deepl) > 1
+    }
+
+    private func deeplKeyFingerprint(_ key: String) -> String {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if k.count <= 8 { return k }
+        return String(k.prefix(6)) + "#" + String(k.suffix(6)) + "#\(k.count)"
+    }
+
+    private func recordDeepLSuccess(key: String) {
+        let id = deeplKeyFingerprint(key)
+        deeplKeySuccessCount[id, default: 0] += 1
+    }
+
+    /// 按模式排出本轮尝试顺序（仅含当前可用 Key）
+    private func orderedDeepLKeys(available: [String], allKeys: [String]) -> [String] {
+        guard !available.isEmpty else { return [] }
+        if isDeepLHighConcurrency {
+            // Round Robin：从全局游标起转一圈
+            let start = deeplKeyRoundRobin % available.count
+            return (0..<available.count).map { available[(start + $0) % available.count] }
+        }
+        // 低并发：粘在 sticky 对应的那把上；若已不可用则按全量顺序找下一把
+        if deeplStickyIndex >= allKeys.count { deeplStickyIndex = 0 }
+        let sticky = allKeys[deeplStickyIndex]
+        if available.contains(sticky) {
+            let rest = available.filter { $0 != sticky }
+            return [sticky] + rest
+        }
+        // sticky 已被剔除/冷却：落到全量顺序中下一把仍可用的
+        for offset in 0..<allKeys.count {
+            let idx = (deeplStickyIndex + offset) % allKeys.count
+            let k = allKeys[idx]
+            if available.contains(k) {
+                deeplStickyIndex = idx
+                let rest = available.filter { $0 != k }
+                return [k] + rest
+            }
+        }
+        return available
+    }
+
+    private func noteDeepLKeyUsed(_ key: String, allKeys: [String], highConcurrency: Bool) {
+        if highConcurrency {
+            if let i = allKeys.firstIndex(of: key) {
+                deeplKeyRoundRobin = i + 1
+            } else {
+                deeplKeyRoundRobin += 1
+            }
+        } else if let i = allKeys.firstIndex(of: key) {
+            deeplStickyIndex = i
+        }
+    }
+
+    private func noteDeepLKeyFailed(_ key: String, kind: KeyFailureKind, allKeys: [String]) {
+        deeplKeyCooldown.mark(key, kind: kind)
+        // 456 / 无效：粘性与 RR 都跳到下一把，避免反复打死 Key
+        if kind == .quotaExhausted || kind == .invalid, let i = allKeys.firstIndex(of: key) {
+            deeplStickyIndex = (i + 1) % max(allKeys.count, 1)
+            deeplKeyRoundRobin = (i + 1) % max(allKeys.count, 1)
+        }
+    }
+
+    /// DeepL 单条：低并发固定顺序粘性；高并发 RR
     func translateWithDeepL(_ text: String, targetLang: String) async throws -> String {
         let allKeys = loadDeepLKeys()
         guard !allKeys.isEmpty else { throw TranslationError.apiError("未配置 DeepL API Key") }
-        let keys = deeplKeyCooldown.availableKeys(from: allKeys)
-        let start = deeplKeyRoundRobin % keys.count
+        let high = isDeepLHighConcurrency
+        let available = deeplKeyCooldown.availableKeys(from: allKeys)
+        let ordered = orderedDeepLKeys(available: available, allKeys: allKeys)
         var lastError: Error = TranslationError.apiError("DeepL 全部 Key 不可用")
-        for offset in 0..<keys.count {
-            let idx = (start + offset) % keys.count
-            let key = keys[idx]
+        for key in ordered {
             do {
                 let out = try await DeepLTranslate.translate(text: text, apiKey: key, targetLang: targetLang)
-                deeplKeyRoundRobin = (allKeys.firstIndex(of: key) ?? idx) + 1
+                recordDeepLSuccess(key: key)
+                noteDeepLKeyUsed(key, allKeys: allKeys, highConcurrency: high)
                 return out
             } catch {
                 lastError = error
-                deeplKeyCooldown.mark(key, kind: Self.keyFailureKind(error))
+                let kind = Self.keyFailureKind(error)
+                noteDeepLKeyFailed(key, kind: kind, allKeys: allKeys)
                 continue
             }
         }
-        // 全部 Key 失败 → 回退 Google（免 Key）
         do {
             return try await GoogleTranslate.translate(text: text, targetLang: targetLanguage.googleCode)
         } catch {
@@ -2251,33 +2382,35 @@ class AppStore: AIService.Runtime {
         }
     }
 
+    /// DeepL 批量：高并发时并行分批 + 每批 RR；低并发串行粘性
     func translateTextsWithDeepL(_ texts: [String], targetLang: String) async -> [String?] {
-        let keys = loadDeepLKeys()
-        guard !keys.isEmpty else {
+        let allKeys = loadDeepLKeys()
+        guard !allKeys.isEmpty else {
             return Array(repeating: nil, count: texts.count)
         }
-        // 原生批量：一次 HTTP 多句，按 Key 轮询分批并行
-        return await translateNativeBatchParallel(texts, chunkSize: 30, parallelism: min(3, max(1, keys.count))) { chunk in
-            let ks = self.deeplKeyCooldown.availableKeys(from: self.loadDeepLKeys())
-            guard !ks.isEmpty else { throw TranslationError.apiError("DeepL 无可用 Key") }
-            let i = self.deeplKeyRoundRobin % ks.count
-            let key = ks[i]
-            self.deeplKeyRoundRobin = i + 1
-            do {
-                return try await DeepLTranslate.translate(texts: chunk, apiKey: key, targetLang: targetLang)
-            } catch {
-                self.deeplKeyCooldown.mark(key, kind: Self.keyFailureKind(error))
-                for k in self.deeplKeyCooldown.availableKeys(from: self.loadDeepLKeys()) where k != key {
-                    do {
-                        let r = try await DeepLTranslate.translate(texts: chunk, apiKey: k, targetLang: targetLang)
-                        return r
-                    } catch {
-                        self.deeplKeyCooldown.mark(k, kind: Self.keyFailureKind(error))
-                        continue
-                    }
+        let high = isDeepLHighConcurrency
+        let parallelism = high
+            ? min(resolvedTranslationConcurrency(for: .deepl), max(1, allKeys.count))
+            : 1
+        return await translateNativeBatchParallel(texts, chunkSize: 30, parallelism: parallelism) { chunk in
+            let available = self.deeplKeyCooldown.availableKeys(from: self.loadDeepLKeys())
+            guard !available.isEmpty else { throw TranslationError.apiError("DeepL 无可用 Key") }
+            let ordered = self.orderedDeepLKeys(available: available, allKeys: allKeys)
+            var lastError: Error?
+            for key in ordered {
+                do {
+                    let r = try await DeepLTranslate.translate(texts: chunk, apiKey: key, targetLang: targetLang)
+                    self.recordDeepLSuccess(key: key)
+                    self.noteDeepLKeyUsed(key, allKeys: allKeys, highConcurrency: high)
+                    return r
+                } catch {
+                    lastError = error
+                    let kind = Self.keyFailureKind(error)
+                    self.noteDeepLKeyFailed(key, kind: kind, allKeys: allKeys)
+                    continue
                 }
-                throw error
             }
+            throw lastError ?? TranslationError.apiError("DeepL 无可用 Key")
         }
     }
 
@@ -2327,30 +2460,43 @@ class AppStore: AIService.Runtime {
     }
 
     enum KeyFailureKind {
-        case invalid   // 401/403 等：Key 无效，较长时间跳过
-        case limited   // 429/配额：限流，短时间跳过
+        case invalid          // 401/403：Key 无效，长冷却
+        case limited          // 429：限流，短冷却
+        case quotaExhausted   // 456 / 额度耗尽：本会话剔除（不自动回池）
         case other
     }
 
     static func keyFailureKind(_ error: Error) -> KeyFailureKind {
         let msg = error.localizedDescription.lowercased()
+        // 先匹配 456 / quota，避免被笼统 "exceed" 误判为 429
+        let quotaTokens = [" 456", "456:", "quota exceeded", "quota_exceeded", "character limit",
+                           "cost limit", "额度耗尽", "配额用尽", "已用尽"]
+        for t in quotaTokens where msg.contains(t) { return .quotaExhausted }
+        if msg.contains("456") { return .quotaExhausted }
+
         let invalidTokens = ["401", "403", "unauthorized", "forbidden", "invalid api", "invalid key",
                              "authentication", "鉴权", "授权", "无效", "not valid", "incorrect api"]
-        let limitedTokens = ["429", "456", "quota", "rate limit", "too many", "exceed", "额度", "配额",
-                             "resource exhausted", "限流", "throttle"]
         for t in invalidTokens where msg.contains(t) { return .invalid }
+
+        let limitedTokens = ["429", "rate limit", "too many", "resource exhausted", "限流", "throttle"]
         for t in limitedTokens where msg.contains(t) { return .limited }
+
+        // 无状态码时的模糊配额词
+        if msg.contains("quota") || msg.contains("额度") || msg.contains("配额") {
+            return .quotaExhausted
+        }
         return .other
     }
 
-    /// 多 Key 冷却：无效 Key 跳过约 1 小时，限流 Key 跳过约 5 分钟
+    /// 多 Key 冷却：429 短冷却；401/403 长冷却；456 本会话剔除（不因「全部不可用」而清空）
     private struct KeyCooldownBook {
         private var until: [String: Date] = [:]
+        /// 456 剔除：会话内不再使用（除非用户改 Key 列表触发自然换指纹）
+        private var exhausted: Set<String> = []
         private let invalidCooldown: TimeInterval = 3600
         private let limitedCooldown: TimeInterval = 300
 
         private func fp(_ key: String) -> String {
-            // 不存明文，用前后缀指纹
             let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
             if k.count <= 8 { return k }
             return String(k.prefix(6)) + "#" + String(k.suffix(6)) + "#\(k.count)"
@@ -2358,6 +2504,7 @@ class AppStore: AIService.Runtime {
 
         mutating func isAvailable(_ key: String, now: Date = Date()) -> Bool {
             let id = fp(key)
+            if exhausted.contains(id) { return false }
             if let u = until[id], u > now { return false }
             if let u = until[id], u <= now { until.removeValue(forKey: id) }
             return true
@@ -2370,18 +2517,24 @@ class AppStore: AIService.Runtime {
                 until[id] = now.addingTimeInterval(invalidCooldown)
             case .limited:
                 until[id] = now.addingTimeInterval(limitedCooldown)
+            case .quotaExhausted:
+                exhausted.insert(id)
+                until.removeValue(forKey: id)
             case .other:
-                // 短暂跳过，避免连续打同一坏网关
                 until[id] = now.addingTimeInterval(20)
             }
         }
 
-        /// 从列表中挑出当前可用的 Key；若全部冷却则清空冷却并返回全部（避免卡死）
+        /// 可用 Key；若仅剩冷却中的（非 456 剔除），清空短冷却避免卡死；456 剔除的不会因卡死而恢复
         mutating func availableKeys(from keys: [String]) -> [String] {
             let open = keys.filter { isAvailable($0) }
             if !open.isEmpty { return open }
+            // 全部不可用：只清 429/其它短冷却，保留 exhausted
             until.removeAll()
-            return keys
+            let after = keys.filter { isAvailable($0) }
+            if !after.isEmpty { return after }
+            // 若全被 456 剔除，仍返回空，由上层回退其它引擎
+            return []
         }
     }
 
@@ -2659,8 +2812,9 @@ class AppStore: AIService.Runtime {
 
     /// 列表/批量翻译入口：按首选引擎选最优路径
     /// - DeepL / Microsoft：原生「一次请求多句」（非拼串），吞吐高且按条独立译
+    /// - Google：kiss Google2 translateHtml（去重 + 按字符切批 + 并发池 + 按 index 回填）
     /// - AI：多 Provider 分片并发
-    /// - Google / Lingva / MyMemory：单条请求 + 受控并发（无可靠多句 API）
+    /// - Lingva / MyMemory：单条请求 + 受控并发
     /// 批量缺口用引擎链单条补齐，避免整批失败
     /// 简繁转换：已是另一侧中文的条目本地映射，不占用 API 名额
     func translateTexts(_ texts: [String], concurrency: Int? = nil) async -> [String?] {
@@ -2712,7 +2866,57 @@ class AppStore: AIService.Runtime {
             apiResults = await translateTextsWithAIProviders(apiTexts, perProviderConcurrency: max(1, limit))
             usedPrimary = apiResults.contains(where: { $0?.isEmpty == false })
             if usedPrimary { lastUsedTranslationEngine = .ai }
-        case .google, .mymemory, .lingva, .yandex, .azure:
+        case .google:
+            // kiss 流程：缓存命中跳过 → Google2 批量 → 缺口单条补齐
+            var batchOut: [String?] = Array(repeating: nil, count: apiTexts.count)
+            var needFetch: [(Int, String)] = []
+            for (j, t) in apiTexts.enumerated() {
+                if let cached = TranslationCache.get(
+                    text: t, targetLang: lang, provider: TranslationEngine.google.rawValue
+                ), !cached.isEmpty {
+                    batchOut[j] = cached
+                } else {
+                    needFetch.append((j, t))
+                }
+            }
+            if !needFetch.isEmpty {
+                let fetched = await GoogleTranslate.translate(
+                    texts: needFetch.map(\.1),
+                    targetLang: targetLanguage.googleCode
+                )
+                for (k, (j, _)) in needFetch.enumerated() where k < fetched.count {
+                    batchOut[j] = fetched[k]
+                }
+            }
+            apiResults = batchOut
+            usedPrimary = apiResults.contains(where: { $0?.isEmpty == false })
+            if usedPrimary { lastUsedTranslationEngine = .google }
+        case .azure:
+            // Bing Edge 免 Key 批量（与 Google2 同骨架）
+            var batchOut: [String?] = Array(repeating: nil, count: apiTexts.count)
+            var needFetch: [(Int, String)] = []
+            for (j, t) in apiTexts.enumerated() {
+                if let cached = TranslationCache.get(
+                    text: t, targetLang: lang, provider: TranslationEngine.azure.rawValue
+                ), !cached.isEmpty {
+                    batchOut[j] = cached
+                } else {
+                    needFetch.append((j, t))
+                }
+            }
+            if !needFetch.isEmpty {
+                let fetched = await AzureBingTranslate.translate(
+                    texts: needFetch.map(\.1),
+                    targetLang: targetLanguage.microsoftCode
+                )
+                for (k, (j, _)) in needFetch.enumerated() where k < fetched.count {
+                    batchOut[j] = fetched[k]
+                }
+            }
+            apiResults = batchOut
+            usedPrimary = apiResults.contains(where: { $0?.isEmpty == false })
+            if usedPrimary { lastUsedTranslationEngine = .azure }
+        case .mymemory, .lingva, .yandex:
             // 无稳定多句批量 API：并发单条（每条仍走完整引擎链，含简繁）
             let concurrent = await translateConcurrently(apiTexts, concurrency: limit)
             for (j, (origIdx, _)) in needAPI.enumerated() {
@@ -2987,6 +3191,65 @@ class AppStore: AIService.Runtime {
             }
             return ordered.joined(separator: "\n\n")
         }
+    }
+
+    /// 机器初译（排除 AI）→ 按块 AI 审校润色。用于「更高质量重新翻译」
+    func translateLongTextWithAIRefinement(
+        _ text: String,
+        maxChunkChars: Int = 1600
+    ) async throws -> String {
+        guard !aiProviders.isEmpty else {
+            throw TranslationError.apiError("更高质量重译需要配置 AI 服务商")
+        }
+        let chunks = Self.splitTextIntoChunks(text, maxChars: maxChunkChars)
+        guard !chunks.isEmpty else { return "" }
+        // 初译不用 AI，避免「AI 译完再 AI 审」叠床架屋；审校专用 AI
+        let draftExclude: Set<TranslationEngine> = [.ai]
+        var refined: [String] = []
+        refined.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            let draft = try await translateText(chunk, excluding: draftExclude)
+            let polished = try await refineTranslation(source: chunk, initial: draft)
+            refined.append(polished)
+        }
+        lastUsedTranslationEngine = .ai
+        return refined.joined(separator: "\n\n")
+    }
+
+    /// 对照原文审校初译；Prompt 可在设置中编辑
+    func refineTranslation(source: String, initial: String) async throws -> String {
+        let src = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = initial.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !src.isEmpty else { return draft }
+        if draft.isEmpty {
+            return try await translateText(src, excluding: [])
+        }
+        let lang = targetLanguage
+        let template = translationRefinementPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? AppStore.defaultTranslationRefinementPrompt
+            : translationRefinementPrompt
+        var prompt = template
+            .replacingOccurrences(of: "{{lang}}", with: lang.promptLabel)
+            .replacingOccurrences(of: "{{source}}", with: src)
+            .replacingOccurrences(of: "{{SOURCE_TEXT}}", with: src)
+            .replacingOccurrences(of: "{{translation}}", with: draft)
+            .replacingOccurrences(of: "{{INITIAL_TRANSLATION}}", with: draft)
+            .replacingOccurrences(of: "{{GLOSSARY}}", with: "")
+        if !template.contains("{{source}}") && !template.contains("{{SOURCE_TEXT}}") {
+            prompt += "\n\n【原文】\n" + src
+        }
+        if !template.contains("{{translation}}") && !template.contains("{{INITIAL_TRANSLATION}}") {
+            prompt += "\n\n【初译】\n" + draft
+        }
+        let preferred = defaultTranslationProviderID ?? defaultSummaryProviderID
+        let (result, _) = try await callAIWithFailover(
+            preferredID: preferred,
+            probeText: src,
+            maxTokens: 4096,
+            buildPrompt: { prompt }
+        )
+        let cleaned = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? draft : cleaned
     }
 
     static func splitTextIntoChunks(_ text: String, maxChars: Int) -> [String] {
@@ -3635,6 +3898,7 @@ class AppStore: AIService.Runtime {
             showReadArticles: showReadArticles,
             showUnreadCount: showUnreadCount,
             translationPrompt: translationPrompt,
+            translationRefinementPrompt: translationRefinementPrompt,
             summaryPrompt: summaryPrompt,
             explainPrompt: explainPrompt,
             readRetentionDays: readRetentionDays,
@@ -3689,6 +3953,7 @@ class AppStore: AIService.Runtime {
         showReadArticles = s.showReadArticles
         showUnreadCount = s.showUnreadCount
         translationPrompt = s.translationPrompt
+        translationRefinementPrompt = s.translationRefinementPrompt
         summaryPrompt = s.summaryPrompt
         explainPrompt = s.explainPrompt
         Self.migrateLegacyDefaultPrompts(

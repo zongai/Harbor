@@ -876,7 +876,7 @@ struct ArticleReaderView: View {
         await performBodyTranslation(excluding: [], progressLabel: "正在翻译…")
     }
 
-    /// 重新翻译：清空缓存后重跑引擎链；高质量模式跳过免费引擎
+    /// 重新翻译：普通模式重跑引擎链；高质量 = 机器初译 + AI 对照原文审校
     private func retranslate(preferHigherQuality: Bool) async {
         translatedContent = nil
         var cleared = currentArticle
@@ -885,9 +885,51 @@ struct ArticleReaderView: View {
         cleared.translationEngineName = nil
         store.updateArticle(cleared)
         showTranslated = false
-        let excluding: Set<TranslationEngine> = preferHigherQuality ? [.google, .mymemory, .lingva] : []
-        let label = preferHigherQuality ? "正在用更高质量引擎翻译…" : "正在重新翻译…"
-        await performBodyTranslation(excluding: excluding, progressLabel: label)
+        if preferHigherQuality {
+            await performBodyTranslationWithAIRefinement()
+        } else {
+            await performBodyTranslation(excluding: [], progressLabel: "正在重新翻译…")
+        }
+    }
+
+    /// 更高质量：分段机器初译（排除 AI）→ AI 审校润色（设置中可改 Prompt）
+    private func performBodyTranslationWithAIRefinement() async {
+        translationError = nil
+        isTranslating = true
+        translationProgress = "正在初译…"
+        do {
+            let titleTask = Task { () -> String? in
+                let t = currentArticle.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { return nil }
+                // 标题：初译后同样 AI 审校
+                let draft = try? await store.translateText(t, excluding: [.ai])
+                guard let draft, !draft.isEmpty else {
+                    return try? await store.translateText(t, excluding: [])
+                }
+                return (try? await store.refineTranslation(source: t, initial: draft)) ?? draft
+            }
+            let media = HTMLUtils.extractMediaForTranslation(currentArticle.content)
+            translationProgress = "正在初译并 AI 审校…"
+            let result = try await store.translateLongTextWithAIRefinement(media.text, maxChunkChars: 1600)
+            let restored = HTMLUtils.restoreMediaAfterTranslation(
+                result, images: media.images, tables: media.tables
+            )
+            translatedContent = Self.wrapTranslatedHTML(restored)
+            let translatedTitle = await titleTask.value
+            var updated = currentArticle
+            updated.translatedContent = translatedContent
+            updated.translationEngineName = "AI 审校"
+            if let translatedTitle, !translatedTitle.isEmpty {
+                updated.translatedTitle = translatedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            store.updateArticle(updated)
+            showTranslated = true
+            translationProgress = nil
+        } catch {
+            translationError = error.localizedDescription
+            translationProgress = nil
+        }
+        isTranslating = false
     }
 
     /// 指定单一翻译源重新翻译（菜单「选择翻译源」）
