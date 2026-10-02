@@ -499,10 +499,14 @@ struct StorageSettingsView: View {
 
 // MARK: - 同步与数据 · 导入与导出
 
+private struct SettingsExportFileItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct SettingsImportExportView: View {
     @Environment(AppStore.self) private var store
-    @State private var settingsExportURL: URL?
-    @State private var showSettingsExport = false
+    @State private var settingsExportItem: SettingsExportFileItem?
     @State private var showSettingsImport = false
     @State private var settingsIOMessage: String?
     @State private var exportIncludeSecrets = false
@@ -516,10 +520,18 @@ struct SettingsImportExportView: View {
                 Button {
                     do {
                         let data = try store.exportSettingsJSON(includeSecrets: exportIncludeSecrets)
-                        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Harbor-settings.json")
+                        let name = "Harbor-settings-\(Int(Date().timeIntervalSince1970)).json"
+                        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                        if FileManager.default.fileExists(atPath: url.path) {
+                            try? FileManager.default.removeItem(at: url)
+                        }
                         try data.write(to: url, options: .atomic)
-                        settingsExportURL = url
-                        showSettingsExport = true
+                        guard FileManager.default.fileExists(atPath: url.path) else {
+                            settingsIOMessage = "导出失败：临时文件未写入"
+                            return
+                        }
+                        // item 驱动 sheet，避免 isPresented + 可选 URL 竞态导致白屏
+                        settingsExportItem = SettingsExportFileItem(url: url)
                     } catch {
                         settingsIOMessage = "导出失败：\(error.localizedDescription)"
                     }
@@ -541,10 +553,11 @@ struct SettingsImportExportView: View {
         .appFormChrome()
         .navigationTitle("导入与导出")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showSettingsExport) {
-            if let url = settingsExportURL {
-                SettingsExportPicker(url: url) { showSettingsExport = false }
+        .sheet(item: $settingsExportItem) { item in
+            SettingsExportPicker(url: item.url) {
+                settingsExportItem = nil
             }
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $showSettingsImport) {
             SettingsImportPicker { url in

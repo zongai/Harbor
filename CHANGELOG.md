@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3-118] — feature/epub-opds
+
+相对：`v1.3-117`
+
+### Fixed
+- 设置「导入与导出」：导出改用 `sheet(item:)` + 带时间戳临时文件，避免白屏；DocumentPicker `asCopy: true`
+
 ## [1.3-117] — feature/epub-opds
 
 相对：`v1.3-116`

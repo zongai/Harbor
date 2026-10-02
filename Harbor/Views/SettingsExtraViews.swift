@@ -477,16 +477,22 @@ struct SettingsExportPicker: UIViewControllerRepresentable {
     var onDismiss: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(onDismiss: onDismiss) }
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        // asCopy: true 避免系统移动临时文件后路径失效
         let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
         picker.delegate = context.coordinator
+        picker.shouldShowFileExtensions = true
         return picker
     }
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onDismiss: () -> Void
         init(onDismiss: @escaping () -> Void) { self.onDismiss = onDismiss }
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onDismiss() }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { onDismiss() }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            DispatchQueue.main.async { self.onDismiss() }
+        }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            DispatchQueue.main.async { self.onDismiss() }
+        }
     }
 }
 
