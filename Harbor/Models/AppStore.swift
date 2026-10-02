@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 @Observable
 @MainActor
@@ -796,6 +797,8 @@ class AppStore: AIService.Runtime {
     struct GroupSettingsSnapshot: Codable {
         var name: String
         var sortOrder: Int?
+        /// 分组摘要模板预设 ID
+        var summaryPromptPresetID: String?
     }
 
     struct SettingsExportPayload: Codable {
@@ -855,6 +858,8 @@ class AppStore: AIService.Runtime {
         var bookDefaultReadingMode: String?
         var bookTTSRate: Double?
         var bookAutoLanguageVoice: Bool?
+        /// OPDS 书库列表（设置类；EPUB 文件本身不导出）
+        var opdsCatalogs: [OPDSCatalogExportItem]?
         var groups: [GroupSettingsSnapshot]?
         var feeds: [FeedSettingsSnapshot]?
     }
@@ -875,7 +880,11 @@ class AppStore: AIService.Runtime {
             )
         }
         let groupSnaps: [GroupSettingsSnapshot] = groups.map {
-            GroupSettingsSnapshot(name: $0.name, sortOrder: $0.sortOrder)
+            GroupSettingsSnapshot(
+                name: $0.name,
+                sortOrder: $0.sortOrder,
+                summaryPromptPresetID: $0.summaryPromptPresetID
+            )
         }
         let snap = makePersistedSettings()
         let payload = SettingsExportPayload(
@@ -941,6 +950,7 @@ class AppStore: AIService.Runtime {
             bookDefaultReadingMode: settings.bookDefaultReadingMode,
             bookTTSRate: settings.bookTTSRate,
             bookAutoLanguageVoice: settings.bookAutoLanguageVoice,
+            opdsCatalogs: OPDSCatalogStore().exportItems(includePasswords: includeSecrets),
             groups: groupSnaps,
             feeds: feedSnaps
         )
@@ -977,6 +987,10 @@ class AppStore: AIService.Runtime {
             groups: payload.groups ?? [],
             feeds: payload.feeds ?? []
         )
+        // 书籍：阅读偏好已在 settings 快照 / legacy 中；OPDS 书库列表单独合并
+        if let opds = payload.opdsCatalogs {
+            OPDSCatalogStore().replaceAll(from: opds)
+        }
         saveToStorage()
     }
 
@@ -1098,8 +1112,15 @@ class AppStore: AIService.Runtime {
                 if let order = g.sortOrder {
                     groups[idx].sortOrder = order
                 }
+                if let pid = g.summaryPromptPresetID, !pid.isEmpty {
+                    groups[idx].summaryPromptPresetID = pid
+                }
             } else {
-                groups.append(FeedGroup(name: name, sortOrder: g.sortOrder ?? groups.count))
+                groups.append(FeedGroup(
+                    name: name,
+                    sortOrder: g.sortOrder ?? groups.count,
+                    summaryPromptPresetID: g.summaryPromptPresetID ?? SummaryPromptPreset.globalID
+                ))
             }
         }
         FeedRepository.saveGroups(groups)
@@ -1469,6 +1490,241 @@ class AppStore: AIService.Runtime {
     func group(for feed: RSSFeed) -> FeedGroup? {
         guard let gid = feed.groupID else { return nil }
         return groups.first { $0.id == gid }
+    }
+
+    // MARK: - 自动订阅源分类（AI，仅从已有分组 Taxonomy 中选）
+
+    struct FeedAutoClassifyOutcome: Sendable {
+        var feedID: UUID
+        var feedTitle: String
+        /// 写入的分组名；nil 表示未改分组
+        var assignedGroupName: String?
+        var uncertain: Bool
+        var confidence: Double?
+        var detail: String
+    }
+
+    /// 对单个源自动分类并应用主分类（需已有分组 + AI）
+    @discardableResult
+    func autoClassifyFeed(_ feedID: UUID, apply: Bool = true) async -> FeedAutoClassifyOutcome {
+        guard let feed = feeds.first(where: { $0.id == feedID }) else {
+            return FeedAutoClassifyOutcome(
+                feedID: feedID, feedTitle: "", assignedGroupName: nil,
+                uncertain: true, confidence: nil, detail: "源不存在"
+            )
+        }
+        let title = feed.title.isEmpty ? "未命名源" : feed.title
+        let taxonomy = groups.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !taxonomy.isEmpty else {
+            return FeedAutoClassifyOutcome(
+                feedID: feedID, feedTitle: title, assignedGroupName: nil,
+                uncertain: true, confidence: nil, detail: "请先在「管理分组」中创建分类"
+            )
+        }
+        guard !aiProviders.isEmpty else {
+            return FeedAutoClassifyOutcome(
+                feedID: feedID, feedTitle: title, assignedGroupName: nil,
+                uncertain: true, confidence: nil, detail: "请先配置 AI 服务商"
+            )
+        }
+
+        let desc = Self.extractChannelDescription(feedURL: feed.url)
+        let recent = feed.articles
+            .sorted { ($0.publishedDate ?? .distantPast) > ($1.publishedDate ?? .distantPast) }
+            .prefix(8)
+        var articleLines: [String] = []
+        for (i, a) in recent.enumerated() {
+            let t = a.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let s = a.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = a.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let snippet: String = {
+                if !s.isEmpty { return String(s.prefix(280)) }
+                let plain = body
+                    .replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+                    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return String(plain.prefix(280))
+            }()
+            var line = "\(i + 1). 标题：\(t.isEmpty ? "（无标题）" : t)"
+            if !snippet.isEmpty { line += "\n   摘要：\(snippet)" }
+            articleLines.append(line)
+        }
+        let articlesBlock = articleLines.isEmpty ? "（暂无文章，仅根据名称与网址判断）" : articleLines.joined(separator: "\n")
+        let taxonomyBlock = taxonomy.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+
+        let prompt = """
+        根据 RSS 订阅源信息与最近文章，从给定 Taxonomy 中选择合适分类。
+
+        【订阅源名称】
+        \(title)
+
+        【订阅源描述】
+        \(desc.isEmpty ? "（无）" : desc)
+
+        【订阅源网址】
+        \(feed.url)
+
+        【最近文章】
+        \(articlesBlock)
+
+        【Taxonomy（只能从中选择，禁止自造）】
+        \(taxonomyBlock)
+
+        规则：
+        - 只能输出 Taxonomy 中已有的分类名，禁止创建新分类。
+        - 反映长期主要内容，不要因单篇偶然主题分类。
+        - 优先参考多篇文章的主题分布；名称/描述与文章冲突时以文章为准。
+        - 可选 1 个或多个 categories，但勿凑数；无把握时 categories 为空且 uncertain=true。
+        - primary_category 为最能代表主内容的一项（须在 categories 中，或与之同名）。
+        - confidence 为 0～1；低于 0.60 的不要选入 categories。
+        - 不要仅凭域名、站名字面或单篇标题推断。
+
+        只输出一个 JSON 对象，不要 Markdown 代码块或其它说明，格式：
+        {"primary_category":"分类名或null","categories":[{"name":"分类名","confidence":0.0}],"uncertain":false,"reason":"一句话依据"}
+        """
+
+        do {
+            let preferred = defaultSummaryProviderID ?? defaultTranslationProviderID
+            let (raw, _) = try await callAIWithFailover(
+                preferredID: preferred,
+                probeText: title,
+                maxTokens: 512,
+                buildPrompt: { prompt }
+            )
+            let parsed = Self.parseFeedClassifyJSON(raw, taxonomy: taxonomy)
+            let minConfidence = 0.60
+            let primary = parsed.primary
+            let conf = parsed.categories.first(where: { $0.name == primary })?.confidence
+                ?? parsed.categories.map(\.confidence).max()
+
+            if parsed.uncertain || primary == nil {
+                return FeedAutoClassifyOutcome(
+                    feedID: feedID, feedTitle: title, assignedGroupName: nil,
+                    uncertain: true, confidence: conf,
+                    detail: parsed.reason.isEmpty ? "证据不足，未改分组" : parsed.reason
+                )
+            }
+            guard let name = primary,
+                  let confValue = conf, confValue >= minConfidence,
+                  let group = groups.first(where: { $0.name == name }) else {
+                return FeedAutoClassifyOutcome(
+                    feedID: feedID, feedTitle: title, assignedGroupName: nil,
+                    uncertain: true, confidence: conf,
+                    detail: parsed.reason.isEmpty ? "未匹配到有效分组" : parsed.reason
+                )
+            }
+            if apply {
+                moveFeed(feedID, toGroup: group.id)
+            }
+            return FeedAutoClassifyOutcome(
+                feedID: feedID, feedTitle: title, assignedGroupName: name,
+                uncertain: false, confidence: confValue,
+                detail: parsed.reason.isEmpty ? "已归入「\(name)」" : "已归入「\(name)」· \(parsed.reason)"
+            )
+        } catch {
+            return FeedAutoClassifyOutcome(
+                feedID: feedID, feedTitle: title, assignedGroupName: nil,
+                uncertain: true, confidence: nil,
+                detail: error.localizedDescription
+            )
+        }
+    }
+
+    /// 批量：仅处理未分组源
+    func autoClassifyUngroupedFeeds() async -> [FeedAutoClassifyOutcome] {
+        let targets = feeds.filter { $0.groupID == nil }
+        var results: [FeedAutoClassifyOutcome] = []
+        results.reserveCapacity(targets.count)
+        for feed in targets {
+            let r = await autoClassifyFeed(feed.id, apply: true)
+            results.append(r)
+            await Task.yield()
+        }
+        return results
+    }
+
+    private struct ParsedClassify {
+        var primary: String?
+        var categories: [(name: String, confidence: Double)]
+        var uncertain: Bool
+        var reason: String
+    }
+
+    private static func parseFeedClassifyJSON(_ raw: String, taxonomy: [String]) -> ParsedClassify {
+        let taxonomySet = Set(taxonomy)
+        func matchName(_ s: String) -> String? {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if taxonomySet.contains(t) { return t }
+            return taxonomy.first { $0.caseInsensitiveCompare(t) == .orderedSame }
+        }
+
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("```") {
+            text = text
+                .replacingOccurrences(of: #"^```(?:json)?\s*"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"\s*```$"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let data = text.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ParsedClassify(primary: nil, categories: [], uncertain: true, reason: "无法解析模型输出")
+        }
+
+        var cats: [(name: String, confidence: Double)] = []
+        if let arr = obj["categories"] as? [[String: Any]] {
+            for item in arr {
+                guard let n = item["name"] as? String, let mapped = matchName(n) else { continue }
+                let c: Double = {
+                    if let d = item["confidence"] as? Double { return d }
+                    if let i = item["confidence"] as? Int { return Double(i) }
+                    if let s = item["confidence"] as? String, let d = Double(s) { return d }
+                    return 0
+                }()
+                if c >= 0.60 { cats.append((mapped, min(1, max(0, c)))) }
+            }
+        }
+        var primary: String? = nil
+        if let p = obj["primary_category"] as? String {
+            primary = matchName(p)
+        }
+        if primary == nil {
+            primary = cats.max(by: { $0.confidence < $1.confidence })?.name
+        } else if !cats.contains(where: { $0.name == primary }) {
+            cats.append((primary!, 0.75))
+        }
+        let uncertain = (obj["uncertain"] as? Bool) ?? (primary == nil)
+        let reason = (obj["reason"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return ParsedClassify(primary: primary, categories: cats, uncertain: uncertain, reason: reason)
+    }
+
+    /// 从缓存的 Feed XML 抽取 channel/feed 描述（无则空）
+    private static func extractChannelDescription(feedURL: String) -> String {
+        guard let data = OfflineCache.loadFeedXML(url: feedURL),
+              let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
+        else { return "" }
+        let patterns = [
+            #"<channel[^>]*>[\s\S]*?<description[^>]*>([\s\S]*?)</description>"#,
+            #"<feed[^>]*>[\s\S]*?<subtitle[^>]*>([\s\S]*?)</subtitle>"#,
+            #"<feed[^>]*>[\s\S]*?<tagline[^>]*>([\s\S]*?)</tagline>"#
+        ]
+        for p in patterns {
+            if let re = try? NSRegularExpression(pattern: p, options: [.caseInsensitive]),
+               let m = re.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+               m.numberOfRanges >= 2,
+               let r = Range(m.range(at: 1), in: raw) {
+                var s = String(raw[r])
+                s = s.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+                s = s.replacingOccurrences(of: #"&lt;"#, with: "<")
+                s = s.replacingOccurrences(of: #"&gt;"#, with: ">")
+                s = s.replacingOccurrences(of: #"&amp;"#, with: "&")
+                s = s.replacingOccurrences(of: #"&quot;"#, with: "\"")
+                s = s.replacingOccurrences(of: #"&#39;"#, with: "'")
+                s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty { return String(s.prefix(500)) }
+            }
+        }
+        return ""
     }
 
     func isGroupCollapsed(_ groupID: UUID?) -> Bool {
@@ -1849,8 +2105,21 @@ class AppStore: AIService.Runtime {
     func refreshAll() async {
         let snapshot = feeds
         guard !snapshot.isEmpty else { return }
+        // 新一轮刷新才递增 session；切换页面不取消（仅用户点「取消」或再次全量刷新会换 session）
         refreshSessionID += 1
         let session = refreshSessionID
+        // 切到后台时尽量跑完本轮（iOS 约数十秒，超时由系统回收）
+        var bgTaskID = UIBackgroundTaskIdentifier.invalid
+        bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "Harbor.refreshAll") {
+            UIApplication.shared.endBackgroundTask(bgTaskID)
+            bgTaskID = .invalid
+        }
+        defer {
+            if bgTaskID != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTaskID)
+                bgTaskID = .invalid
+            }
+        }
         withAnimation(.easeInOut(duration: 0.28)) {
             isRefreshingAll = true
             isLoading = true
@@ -3356,11 +3625,15 @@ class AppStore: AIService.Runtime {
         return preset(forID: id)?.name ?? id
     }
 
-    /// 解析源级 / 全局摘要 Prompt
+    /// 解析摘要 Prompt：分组预设 → 全局默认 → 自定义/标准模板
     func resolvedSummaryPrompt(for article: Article) -> String {
         ensureSummaryPromptPresets()
-        var presetID = feeds.first(where: { $0.id == article.feedID })?.summaryPromptPresetID
-            ?? SummaryPromptPreset.globalID
+        var presetID = SummaryPromptPreset.globalID
+        if let feed = feeds.first(where: { $0.id == article.feedID }),
+           let gid = feed.groupID,
+           let group = groups.first(where: { $0.id == gid }) {
+            presetID = group.summaryPromptPresetID
+        }
         if presetID.isEmpty || presetID == SummaryPromptPreset.globalID {
             presetID = globalSummaryPresetID
         }
@@ -3373,6 +3646,13 @@ class AppStore: AIService.Runtime {
         if !custom.isEmpty { return custom }
         return SummaryPromptPreset.builtInDefaults.first(where: { $0.id == SummaryPromptPreset.standardID })?.template
             ?? AppStore.defaultSummaryPrompt
+    }
+
+    func setGroupSummaryPreset(_ groupID: UUID, presetID: String) {
+        guard let idx = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[idx].summaryPromptPresetID = presetID.isEmpty ? SummaryPromptPreset.globalID : presetID
+        FeedRepository.saveGroups(groups)
+        saveToStorage()
     }
 
     func upsertSummaryPreset(_ preset: SummaryPromptPreset) {
@@ -3395,6 +3675,10 @@ class AppStore: AIService.Runtime {
         for i in feeds.indices where feeds[i].summaryPromptPresetID == id {
             feeds[i].summaryPromptPresetID = SummaryPromptPreset.globalID
         }
+        for i in groups.indices where groups[i].summaryPromptPresetID == id {
+            groups[i].summaryPromptPresetID = SummaryPromptPreset.globalID
+        }
+        FeedRepository.saveGroups(groups)
         persistSettings()
         saveToStorage()
     }

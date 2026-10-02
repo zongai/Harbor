@@ -7,7 +7,7 @@ struct OPDSCatalog: Identifiable, Codable, Hashable, Sendable {
     var title: String
     var url: String
     var addedAt: Date
-    /// 可选 HTTP Basic 用户名；密码存 Keychain，不进 JSON
+    /// 可选 HTTP Basic 用户名；密码存 Keychain，不进本地 JSON
     var username: String?
 
     init(
@@ -27,6 +27,16 @@ struct OPDSCatalog: Identifiable, Codable, Hashable, Sendable {
     var hasCredentials: Bool {
         !(username ?? "").isEmpty
     }
+}
+
+/// 设置导入/导出用的 OPDS 快照（密码仅在勾选「包含密钥」时写出）
+struct OPDSCatalogExportItem: Codable, Hashable, Sendable {
+    var id: UUID?
+    var title: String
+    var url: String
+    var addedAt: Date?
+    var username: String?
+    var password: String?
 }
 
 enum OPDSCredentialStore {

@@ -136,7 +136,7 @@ struct AISettingsView: View {
             } header: {
                 Text("提示词 · 摘要")
             } footer: {
-                Text("按类型优化的模板（科技/学术/投资/新闻/评测等）。各订阅源可在长按菜单单独指定。占位符：{{title}} {{content}} {{lang}}。")
+                Text("按类型优化的模板（科技/学术/投资/新闻/评测等）。可在「管理分组」为每个分组指定模板，组内源共用；未分组源使用上方全局模板。占位符：{{title}} {{content}} {{lang}}。")
             }
 
             Section {

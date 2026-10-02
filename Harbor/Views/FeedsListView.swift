@@ -22,6 +22,8 @@ struct FeedsListView: View {
     @State private var renameFeedText = ""
     /// 订阅 / 收藏 切换（合并原收藏 Tab）
     @State private var showFavorites = false
+    @State private var isAutoClassifying = false
+    @State private var autoClassifyMessage: String?
 
     private static let allowedImportExtensions: Set<String> = ["opml", "xml", "rss", "atom", "txt"]
 
@@ -119,35 +121,15 @@ struct FeedsListView: View {
                                                       systemImage: prefixOn ? "link.badge.plus" : "link")
                                             }
                                         }
-                                        Menu {
-                                            let currentID = store.feeds.first(where: { $0.id == feed.id })?.summaryPromptPresetID
-                                                ?? SummaryPromptPreset.globalID
-                                            Button {
-                                                store.setFeedSummaryPreset(feed.id, presetID: SummaryPromptPreset.globalID)
-                                            } label: {
-                                                if currentID == SummaryPromptPreset.globalID {
-                                                    Label(SummaryPromptPreset.globalName, systemImage: "checkmark")
-                                                } else {
-                                                    Text(SummaryPromptPreset.globalName)
-                                                }
-                                            }
-                                            ForEach(store.summaryPromptPresets) { preset in
-                                                Button {
-                                                    store.setFeedSummaryPreset(feed.id, presetID: preset.id)
-                                                } label: {
-                                                    if currentID == preset.id {
-                                                        Label(preset.name, systemImage: "checkmark")
-                                                    } else {
-                                                        Text(preset.name)
-                                                    }
-                                                }
-                                            }
-                                        } label: {
-                                            Label("摘要模板…", systemImage: "text.badge.star")
-                                        }
                                         Button { moveFeedTarget = feed } label: {
                                             Label("移动到分组…", systemImage: "folder")
                                         }
+                                        Button {
+                                            Task { await runAutoClassify(feedID: feed.id) }
+                                        } label: {
+                                            Label("自动分类", systemImage: "sparkles.rectangle.stack")
+                                        }
+                                        .disabled(isAutoClassifying || store.groups.isEmpty || store.aiProviders.isEmpty)
                                         if feed.groupID != nil {
                                             Button { store.moveFeed(feed.id, toGroup: nil) } label: {
                                                 Label("移出分组", systemImage: "folder.badge.minus")
@@ -238,6 +220,17 @@ struct FeedsListView: View {
                                 } label: {
                                     Label("管理分组", systemImage: "folder.badge.gearshape")
                                 }
+                                Button {
+                                    Task { await runAutoClassifyUngrouped() }
+                                } label: {
+                                    Label("自动分类未分组", systemImage: "sparkles.rectangle.stack")
+                                }
+                                .disabled(
+                                    isAutoClassifying
+                                    || store.groups.isEmpty
+                                    || store.aiProviders.isEmpty
+                                    || !store.feeds.contains(where: { $0.groupID == nil })
+                                )
                                 Divider()
                                 Button {
                                     showOPMLMenu = true
@@ -257,13 +250,8 @@ struct FeedsListView: View {
             .refreshable {
                 guard !showFavorites else { return }
                 guard !store.chrome.isRefreshingAll else { return }
+                // 不 await：系统下拉指示器立即结束；全量刷新在后台跑完（切换页面不中断）
                 Task { await store.refreshAll() }
-            }
-            .onDisappear {
-                // 离开订阅列表：取消进行中的全量刷新，释放网络与限流槽位
-                if store.chrome.isRefreshingAll {
-                    store.cancelRefreshAll()
-                }
             }
             .safeAreaInset(edge: .top) {
                 // 独立子视图：只观察 chrome，刷新进度不拖着整页列表 body 重算
@@ -379,6 +367,46 @@ struct FeedsListView: View {
             Button("好", role: .cancel) { importMessage = nil }
         } message: {
             Text(importMessage ?? "")
+        }
+        .alert("自动分类", isPresented: Binding(
+            get: { autoClassifyMessage != nil },
+            set: { if !$0 { autoClassifyMessage = nil } }
+        )) {
+            Button("好", role: .cancel) { autoClassifyMessage = nil }
+        } message: {
+            Text(autoClassifyMessage ?? "")
+        }
+        .overlay {
+            if isAutoClassifying {
+                ZStack {
+                    Color.black.opacity(0.2).ignoresSafeArea()
+                    ProgressView("正在自动分类…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+            }
+        }
+    }
+
+    private func runAutoClassify(feedID: UUID) async {
+        guard !isAutoClassifying else { return }
+        isAutoClassifying = true
+        defer { isAutoClassifying = false }
+        let r = await store.autoClassifyFeed(feedID)
+        autoClassifyMessage = "\(r.feedTitle)\n\(r.detail)"
+    }
+
+    private func runAutoClassifyUngrouped() async {
+        guard !isAutoClassifying else { return }
+        isAutoClassifying = true
+        defer { isAutoClassifying = false }
+        let results = await store.autoClassifyUngroupedFeeds()
+        let ok = results.filter { $0.assignedGroupName != nil }.count
+        let skip = results.count - ok
+        if results.isEmpty {
+            autoClassifyMessage = "没有未分组的订阅源"
+        } else {
+            autoClassifyMessage = "完成：\(ok) 个已归类，\(skip) 个未改动（证据不足或失败）"
         }
     }
 
@@ -692,10 +720,7 @@ struct GroupManagerView: View {
             List {
                 Section {
                     ForEach(store.groups.sorted(by: { $0.sortOrder < $1.sortOrder })) { group in
-                        Button {
-                            renameTarget = group
-                            renameText = group.name
-                        } label: {
+                        VStack(alignment: .leading, spacing: AppSpacing.xs) {
                             HStack(spacing: AppSpacing.sm) {
                                 Image(systemName: "folder")
                                     .foregroundStyle(theme.muted)
@@ -708,18 +733,66 @@ struct GroupManagerView: View {
                                     .foregroundStyle(theme.muted)
                                     .monospacedDigit()
                             }
-                            .contentShape(Rectangle())
+                            Menu {
+                                let currentID = group.summaryPromptPresetID.isEmpty
+                                    ? SummaryPromptPreset.globalID
+                                    : group.summaryPromptPresetID
+                                Button {
+                                    store.setGroupSummaryPreset(group.id, presetID: SummaryPromptPreset.globalID)
+                                } label: {
+                                    if currentID == SummaryPromptPreset.globalID {
+                                        Label(SummaryPromptPreset.globalName, systemImage: "checkmark")
+                                    } else {
+                                        Text(SummaryPromptPreset.globalName)
+                                    }
+                                }
+                                ForEach(store.summaryPromptPresets) { preset in
+                                    Button {
+                                        store.setGroupSummaryPreset(group.id, presetID: preset.id)
+                                    } label: {
+                                        if currentID == preset.id {
+                                            Label(preset.name, systemImage: "checkmark")
+                                        } else {
+                                            Text(preset.name)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "text.badge.star")
+                                        .font(.caption)
+                                    Text("摘要：\(store.displayName(forPresetID: group.summaryPromptPresetID.isEmpty ? SummaryPromptPreset.globalID : group.summaryPromptPresetID))")
+                                        .font(AppTypography.caption())
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption2)
+                                }
+                                .foregroundStyle(theme.muted)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("重命名分组")
+                        .contentShape(Rectangle())
+                        .contextMenu {
+                            Button {
+                                renameTarget = group
+                                renameText = group.name
+                            } label: {
+                                Label("重命名", systemImage: "pencil")
+                            }
+                        }
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) { store.deleteGroup(group.id) } label: {
                                 Label("删除", systemImage: "trash")
                             }
+                            Button {
+                                renameTarget = group
+                                renameText = group.name
+                            } label: {
+                                Label("重命名", systemImage: "pencil")
+                            }
+                            .tint(.blue)
                         }
                     }
                 } header: { Text("已有分组") }
-                footer: { Text("点分组可重命名；删除分组后源会回到「未分组」。点组标题可折叠/展开。") }
+                footer: { Text("每个分组可单独指定摘要模板，组内所有源共用。未分组源使用全局默认。左滑可重命名或删除。") }
                 Section("新建分组") {
                     HStack {
                         TextField("分组名称", text: $newName)

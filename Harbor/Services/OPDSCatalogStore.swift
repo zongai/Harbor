@@ -77,4 +77,46 @@ final class OPDSCatalogStore {
         catalogs[i].title = title
         save()
     }
+
+    /// 导出书库列表；`includePasswords` 为真时附带 Keychain 密码
+    func exportItems(includePasswords: Bool) -> [OPDSCatalogExportItem] {
+        catalogs.map { cat in
+            OPDSCatalogExportItem(
+                id: cat.id,
+                title: cat.title,
+                url: cat.url,
+                addedAt: cat.addedAt,
+                username: cat.username,
+                password: includePasswords ? OPDSCredentialStore.password(catalogID: cat.id) : nil
+            )
+        }
+    }
+
+    /// 用导入快照整表替换（保留合法 URL；密码写入 Keychain）
+    func replaceAll(from items: [OPDSCatalogExportItem]) {
+        for old in catalogs {
+            OPDSCredentialStore.delete(catalogID: old.id)
+        }
+        var next: [OPDSCatalog] = []
+        next.reserveCapacity(items.count)
+        for item in items {
+            guard let normalized = NetworkURLPolicy.validateOPDS(item.url) else { continue }
+            let id = item.id ?? UUID()
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let user = item.username?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cat = OPDSCatalog(
+                id: id,
+                title: title.isEmpty ? (normalized.host ?? "OPDS") : title,
+                url: normalized.absoluteString,
+                addedAt: item.addedAt ?? Date(),
+                username: (user?.isEmpty == false) ? user : nil
+            )
+            if let pw = item.password, !pw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                OPDSCredentialStore.savePassword(pw, catalogID: id)
+            }
+            next.append(cat)
+        }
+        catalogs = next.sorted { $0.addedAt > $1.addedAt }
+        save()
+    }
 }

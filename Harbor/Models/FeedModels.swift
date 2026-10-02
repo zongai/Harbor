@@ -40,6 +40,41 @@ struct FeedGroup: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
     var sortOrder: Int = 0
+    /// 该分组统一摘要 Prompt；`global` = 跟随 App 全局默认
+    var summaryPromptPresetID: String = SummaryPromptPreset.globalID
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, sortOrder, summaryPromptPresetID
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        sortOrder: Int = 0,
+        summaryPromptPresetID: String = SummaryPromptPreset.globalID
+    ) {
+        self.id = id
+        self.name = name
+        self.sortOrder = sortOrder
+        self.summaryPromptPresetID = summaryPromptPresetID
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        summaryPromptPresetID = try c.decodeIfPresent(String.self, forKey: .summaryPromptPresetID)
+            ?? SummaryPromptPreset.globalID
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(sortOrder, forKey: .sortOrder)
+        try c.encode(summaryPromptPresetID, forKey: .summaryPromptPresetID)
+    }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (lhs: FeedGroup, rhs: FeedGroup) -> Bool { lhs.id == rhs.id }

@@ -535,7 +535,7 @@ struct SettingsImportExportView: View {
             } header: {
                 Text("导入与导出")
             } footer: {
-                Text("导出设置为完整偏好快照（字体/主题/翻译/AI/TTS 等）；默认不含 API Key。订阅列表的 OPML 导入/导出在「订阅」页；书籍文件与 OPDS 书库不在此备份内。勾选包含 API Key 时请妥善保管导出文件。")
+                Text("导出包含字体/主题/翻译/AI/TTS、书籍阅读偏好（默认模式/语速/双语 Voice）与 OPDS 书库列表；默认不含 API Key 与 OPDS 密码。订阅 OPML 在「订阅」页；本地 EPUB 与译文缓存不导出。勾选「包含 API Key」时一并导出密钥与 OPDS 密码，请妥善保管。")
             }
         }
         .appFormChrome()
