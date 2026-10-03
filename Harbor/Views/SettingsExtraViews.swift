@@ -32,6 +32,14 @@ struct TranslationSettingsView: View {
             }
 
             Section {
+                Toggle("校验译文语种", isOn: $settings.verifyTranslationLanguage)
+            } header: {
+                Text("质量")
+            } footer: {
+                Text("开启后，若译文不像目标语言（例如仍是英文），将自动换用下一翻译引擎重试；全部未通过时保留最后一次结果。短文本、URL、数字不校验。")
+            }
+
+            Section {
                 ForEach(store.translationEngineChain, id: \.self) { engine in
                     HStack(spacing: 10) {
                         Image(systemName: "line.3.horizontal")
@@ -242,6 +250,7 @@ struct TranslationSettingsView: View {
             .presentationDetents([.medium, .large])
         }
         .onChange(of: store.targetLanguage) { _, _ in store.persistSettings() }
+        .onChange(of: store.verifyTranslationLanguage) { _, _ in store.persistSettings() }
         .onChange(of: store.aiOutputLanguage) { _, _ in store.persistSettings() }
     }
 

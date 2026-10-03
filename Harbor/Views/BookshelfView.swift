@@ -36,18 +36,26 @@ struct BookshelfView: View {
             List {
                 if !recentBooks.isEmpty {
                     Section("最近阅读") {
-                        ForEach(recentBooks) { book in
-                            NavigationLink(value: book.id) {
-                                BookRow(
-                                    book: book,
-                                    batchProgress: batchProgress(for: book.id),
-                                    batchText: batchText(for: book.id),
-                                    onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil
-                                )
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(recentBooks) { book in
+                                    NavigationLink(value: book.id) {
+                                        BookGridCell(
+                                            book: book,
+                                            batchProgress: batchProgress(for: book.id),
+                                            batchText: batchText(for: book.id),
+                                            onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil,
+                                            compact: true
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu { bookContextMenu(book) }
+                                }
                             }
-                            .listRowBackground(Color.clear)
-                            .contextMenu { bookContextMenu(book) }
+                            .padding(.vertical, 4)
                         }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
                     }
                 }
 
@@ -58,25 +66,28 @@ struct BookshelfView: View {
                             .foregroundStyle(theme.muted)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(library.books) { book in
-                            NavigationLink(value: book.id) {
-                                BookRow(
-                                    book: book,
-                                    batchProgress: batchProgress(for: book.id),
-                                    batchText: batchText(for: book.id),
-                                    onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil
-                                )
-                            }
-                            .listRowBackground(Color.clear)
-                            .contextMenu { bookContextMenu(book) }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    library.deleteBook(id: book.id)
-                                } label: {
-                                    Label("删除", systemImage: "trash")
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 14, alignment: .top)
+                            ],
+                            spacing: 16
+                        ) {
+                            ForEach(library.books) { book in
+                                NavigationLink(value: book.id) {
+                                    BookGridCell(
+                                        book: book,
+                                        batchProgress: batchProgress(for: book.id),
+                                        batchText: batchText(for: book.id),
+                                        onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil
+                                    )
                                 }
+                                .buttonStyle(.plain)
+                                .contextMenu { bookContextMenu(book) }
                             }
                         }
+                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     }
                 }
 
@@ -440,72 +451,84 @@ private struct BookBatchStartPicker: View {
     }
 }
 
-private struct BookRow: View {
+private struct BookGridCell: View {
     @Environment(BookLibrary.self) private var library
     @Environment(\.theme) private var theme
     let book: Book
     var batchProgress: Double? = nil
     var batchText: String? = nil
     var onCancelBatch: (() -> Void)? = nil
+    /// 最近阅读横滑用较小封面
+    var compact: Bool = false
+
+    private var coverWidth: CGFloat { compact ? 72 : 108 }
+    private var coverHeight: CGFloat { compact ? 100 : 150 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .bottom) {
                 cover
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(book.title)
-                        .font(AppTypography.listTitle())
-                        .foregroundStyle(theme.text)
-                        .lineLimit(2)
+                // 任务进行中：封面底部细条 + 文案（不再用行底进度条）
+                if let batchProgress {
+                    VStack(spacing: 2) {
+                        ProgressView(value: min(1, max(0, batchProgress)))
+                            .tint(.white)
+                            .scaleEffect(x: 1, y: 0.6, anchor: .center)
+                        if let batchText {
+                            Text(batchText)
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(6)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(0.65)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                if let onCancelBatch, batchProgress != nil {
+                    Button(action: onCancelBatch) {
+                        Image(systemName: "xmark.circle.fill")
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .black.opacity(0.45))
+                            .font(.system(size: 18))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(4)
+                }
+            }
+
+            Text(book.title)
+                .font(compact ? AppTypography.caption() : AppTypography.font(size: 13, weight: .medium))
+                .foregroundStyle(theme.text)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !compact {
+                HStack(spacing: 4) {
                     if let author = book.author, !author.isEmpty {
                         Text(author)
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted)
                             .lineLimit(1)
                     }
-                    HStack(spacing: 4) {
-                        Text("\(book.totalChapters) 章")
-                        if let lang = book.language, !lang.isEmpty {
-                            Text("·")
-                            Text(lang)
-                        }
-                        if book.readingProgress > 0.01 {
-                            Text("·")
-                            Text(book.progressPercentText)
-                        }
-                    }
-                    .font(AppTypography.caption())
-                    .foregroundStyle(theme.muted)
-                }
-                Spacer(minLength: 0)
-            }
-
-            // 阅读进度（有进度时显示在书名信息下方）
-            if book.readingProgress > 0.01, batchProgress == nil {
-                ProgressView(value: min(1, max(0, book.readingProgress)))
-                    .tint(theme.accent)
-            }
-
-            // 全书翻译 / TTS 任务进度（仅当前处理的书）
-            if let batchProgress {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: min(1, max(0, batchProgress)))
-                        .tint(theme.accent)
-                    HStack {
-                        Text(batchText ?? "处理中…")
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted)
-                            .lineLimit(2)
-                        Spacer(minLength: 8)
-                        if let onCancelBatch {
-                            Button("取消", action: onCancelBatch)
-                                .font(AppTypography.caption())
-                        }
+                    if book.readingProgress > 0.01 {
+                        if book.author != nil { Text("·") }
+                        Text(book.progressPercentText)
                     }
                 }
+                .font(AppTypography.caption())
+                .foregroundStyle(theme.muted)
             }
         }
-        .padding(.vertical, 4)
+        .frame(width: compact ? coverWidth : nil, alignment: .leading)
     }
 
     @ViewBuilder
@@ -524,46 +547,7 @@ private struct BookRow: View {
                 }
             }
         }
-        .frame(width: 52, height: 72)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-}
-
-/// 使用 UIDocumentPicker，类型放宽到 item/data/zip/epub，避免 .epub 在文件 App 中不可选
-struct EPUBDocumentPicker: UIViewControllerRepresentable {
-    var onPick: (URL?) -> Void
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        var types: [UTType] = [.item, .data, .content]
-        if let epub = UTType(filenameExtension: "epub") {
-            types.insert(epub, at: 0)
-        }
-        if let zip = UTType(filenameExtension: "zip") {
-            types.insert(zip, at: 0)
-        }
-        if let idpf = UTType("org.idpf.epub-container") {
-            types.insert(idpf, at: 0)
-        }
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
-        picker.allowsMultipleSelection = false
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL?) -> Void
-        init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            onPick(urls.first)
-        }
-
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            onPick(nil)
-        }
+        .frame(width: coverWidth, height: coverHeight)
+        .clipped()
     }
 }

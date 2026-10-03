@@ -201,6 +201,15 @@ struct FeedsListView: View {
                         }
                     } else {
                         ToolbarItem(placement: .topBarTrailing) {
+                            NavigationLink {
+                                SearchView()
+                            } label: {
+                                Label("搜索", systemImage: "magnifyingglass")
+                            }
+                            .labelStyle(.iconOnly)
+                            .accessibilityLabel("搜索文章")
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
                             Button("添加订阅", systemImage: "plus") {
                                 showAddFeed = true
                             }

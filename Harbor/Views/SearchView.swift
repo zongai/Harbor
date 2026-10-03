@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 全库搜索：标题、摘要（默认不扫正文；防抖 + 可取消）
+/// 全库搜索：仅标题、摘要（不扫正文；防抖 + 可取消）
 struct SearchView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.theme) private var theme
@@ -11,8 +11,7 @@ struct SearchView: View {
     @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ContentUnavailableView {
                         Label {
@@ -23,7 +22,7 @@ struct SearchView: View {
                                 .foregroundStyle(theme.muted)
                         }
                     } description: {
-                        Text("先匹配标题与摘要，再补充全文命中")
+                        Text("按标题与摘要搜索（支持原文与译文）")
                             .font(AppTypography.body())
                             .foregroundStyle(theme.muted)
                     }
@@ -77,11 +76,10 @@ struct SearchView: View {
             .listStyle(.plain)
             .appScreenBackground()
             .navigationTitle("搜索")
-            .searchable(text: $query, prompt: "标题、摘要，全文异步补充")
+            .searchable(text: $query, prompt: "标题/摘要 · 原文或译文")
             .onChange(of: query) { _, newValue in
                 scheduleSearch(newValue)
             }
-        }
     }
 
     private func scheduleSearch(_ q: String) {
@@ -102,7 +100,7 @@ struct SearchView: View {
             guard !Task.isCancelled else { return }
             guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
 
-            // Phase 1：仅标题 + 摘要（快）
+            // 仅标题 + 摘要（含已译标题/摘要）
             let metaHits = await Task.detached(priority: .userInitiated) {
                 ArticleSearchService.searchMetadata(
                     feeds: feedsSnapshot,
@@ -115,29 +113,6 @@ struct SearchView: View {
             guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
             results = metaHits
             isSearching = false
-
-            // Phase 2：批量从 offline cache 补全文命中（可被下一次输入取消）
-            let exclude = Set(metaHits.map(\.id))
-            let extra = await Task.detached(priority: .utility) {
-                ArticleSearchService.searchFullTextSupplement(
-                    feeds: feedsSnapshot,
-                    query: trimmed,
-                    excludingIDs: exclude,
-                    limit: 40,
-                    batchSize: 24
-                )
-            }.value
-
-            guard !Task.isCancelled else { return }
-            guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
-            if !extra.isEmpty {
-                var seen = Set(results.map(\.id))
-                var merged = results
-                for a in extra where seen.insert(a.id).inserted {
-                    merged.append(a)
-                }
-                results = merged
-            }
         }
     }
 }

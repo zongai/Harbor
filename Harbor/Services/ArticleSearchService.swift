@@ -105,11 +105,22 @@ enum ArticleSearchService {
         for feed in feeds {
             for article in feed.articles {
                 var score = 0
-                let title = (article.translatedTitle ?? article.title).lowercased()
-                if title.contains(q) { score += 8 }
+                // 原文与译文标题都参与匹配
+                let titleOrig = article.title.lowercased()
+                if titleOrig.contains(q) { score += 8 }
+                if let tt = article.translatedTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !tt.isEmpty {
+                    let t = tt.lowercased()
+                    if t != titleOrig, t.contains(q) { score += 8 }
+                }
 
-                let summary = HTMLUtils.stripTags(article.translatedSummary ?? article.summary).lowercased()
-                if summary.contains(q) { score += 4 }
+                let summaryOrig = HTMLUtils.stripTags(article.summary).lowercased()
+                if summaryOrig.contains(q) { score += 4 }
+                if let ts = article.translatedSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !ts.isEmpty {
+                    let s = HTMLUtils.stripTags(ts).lowercased()
+                    if s != summaryOrig, s.contains(q) { score += 4 }
+                }
 
                 if score > 0 {
                     hits.append(Hit(score: score, article: article))

@@ -89,10 +89,15 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    NavigationLink {
+                        AIPromptsRootView()
+                    } label: {
+                        Label("提示词", systemImage: "text.bubble")
+                    }
                 } header: {
                     Text("AI")
                 } footer: {
-                    Text("自动摘要 / 自动翻译可在各订阅源中单独开关。默认引擎、提示词与敏感词回退在此配置。")
+                    Text("服务商与默认引擎在「AI 服务商与功能」；摘要/翻译/审校/解释 Prompt 在「提示词」。")
                 }
 
                 // MARK: 翻译

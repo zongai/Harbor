@@ -121,64 +121,17 @@ struct AISettingsView: View {
                 Text("摘要 / AI 翻译 / AI 解释各自使用的 Provider。解释选「跟随摘要引擎」时与摘要共用。AI 输出语言用于摘要与解释（与翻译目标语言独立）。")
             }
 
-            // MARK: 提示词
+            // MARK: 提示词（二级入口 → 三级具体编辑）
             Section {
-                Picker("全局摘要模板", selection: $settings.globalSummaryPresetID) {
-                    ForEach(store.summaryPromptPresets) { p in
-                        Text(p.name).tag(p.id)
-                    }
-                }
                 NavigationLink {
-                    SummaryPromptPresetsView()
+                    AIPromptsRootView()
                 } label: {
-                    Label("管理 Prompt 预设…", systemImage: "list.bullet.rectangle")
+                    Label("提示词", systemImage: "text.bubble")
                 }
             } header: {
-                Text("提示词 · 摘要")
+                Text("提示词")
             } footer: {
-                Text("按类型优化的模板（科技/学术/投资/新闻/评测等）。可在「管理分组」为每个分组指定模板，组内源共用；未分组源使用上方全局模板。占位符：{{title}} {{content}} {{lang}}。")
-            }
-
-            Section {
-                TextEditor(text: $settings.translationPrompt)
-                    .font(.system(size: 14, design: .monospaced))
-                    .frame(minHeight: 110)
-                Button("恢复默认翻译 Prompt") {
-                    store.translationPrompt = AppStore.defaultTranslationPrompt
-                    store.persistSettings()
-                }
-            } header: {
-                Text("提示词 · 翻译")
-            } footer: {
-                Text("仅「AI 翻译」引擎使用。{{text}} 为待译内容，{{lang}} 为目标语言名称。")
-            }
-
-            Section {
-                TextEditor(text: $settings.translationRefinementPrompt)
-                    .font(.system(size: 14, design: .monospaced))
-                    .frame(minHeight: 140)
-                Button("恢复默认审校 Prompt") {
-                    store.translationRefinementPrompt = AppStore.defaultTranslationRefinementPrompt
-                    store.persistSettings()
-                }
-            } header: {
-                Text("提示词 · 更高质量重译（AI 审校）")
-            } footer: {
-                Text("阅读页「更高质量重新翻译」：先机器初译，再由 AI 对照原文审校。占位符：{{source}} / {{SOURCE_TEXT}} 原文，{{translation}} / {{INITIAL_TRANSLATION}} 初译，{{lang}} 目标语言。只应要求模型输出最终译文。")
-            }
-
-            Section {
-                TextEditor(text: $settings.explainPrompt)
-                    .font(.system(size: 14, design: .monospaced))
-                    .frame(minHeight: 110)
-                Button("恢复默认解释 Prompt") {
-                    store.explainPrompt = AppStore.defaultExplainPrompt
-                    store.persistSettings()
-                }
-            } header: {
-                Text("提示词 · 解释")
-            } footer: {
-                Text("{{text}} 为选中内容；{{lang}} 为 AI 输出语言。")
+                Text("摘要模板、AI 翻译、高质量重译审校与解释的 Prompt。点进入后选择具体类型编辑。")
             }
 
             // MARK: 路由与费用
@@ -683,6 +636,156 @@ struct EditProviderView: View {
     }
 }
 
+
+// MARK: - 提示词二级 / 三级
+
+/// 二级：提示词总览（设置 → AI → 提示词）
+struct AIPromptsRootView: View {
+    var body: some View {
+        Form {
+            Section {
+                NavigationLink {
+                    SummaryPromptSettingsView()
+                } label: {
+                    Label("摘要", systemImage: "doc.text")
+                }
+                NavigationLink {
+                    TranslationPromptSettingsView()
+                } label: {
+                    Label("AI 翻译", systemImage: "globe")
+                }
+                NavigationLink {
+                    RefinementPromptSettingsView()
+                } label: {
+                    Label("高质量重译（审校）", systemImage: "sparkles")
+                }
+                NavigationLink {
+                    ExplainPromptSettingsView()
+                } label: {
+                    Label("解释", systemImage: "text.magnifyingglass")
+                }
+            } footer: {
+                Text("进入后编辑对应 Prompt。摘要含全局模板与预设管理；分组级摘要模板在「管理分组」中设置。")
+            }
+        }
+        .navigationTitle("提示词")
+        .navigationBarTitleDisplayMode(.inline)
+        .appFormChrome()
+    }
+}
+
+/// 三级：摘要
+struct SummaryPromptSettingsView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        @Bindable var settings = store.settings
+        Form {
+            Section {
+                Picker("全局摘要模板", selection: $settings.globalSummaryPresetID) {
+                    ForEach(store.summaryPromptPresets) { p in
+                        Text(p.name).tag(p.id)
+                    }
+                }
+                NavigationLink {
+                    SummaryPromptPresetsView()
+                } label: {
+                    Label("管理 Prompt 预设…", systemImage: "list.bullet.rectangle")
+                }
+            } header: {
+                Text("模板")
+            } footer: {
+                Text("按类型优化的模板（科技/学术/投资/新闻/评测等）。可在「管理分组」为每个分组指定；未分组源使用上方全局模板。占位符：{{title}} {{content}} {{lang}}。")
+            }
+        }
+        .navigationTitle("摘要")
+        .navigationBarTitleDisplayMode(.inline)
+        .appFormChrome()
+        .onDisappear { store.persistSettings() }
+        .onChange(of: store.globalSummaryPresetID) { _, _ in store.persistSettings() }
+    }
+}
+
+/// 三级：AI 翻译 Prompt
+struct TranslationPromptSettingsView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        @Bindable var settings = store.settings
+        Form {
+            Section {
+                TextEditor(text: $settings.translationPrompt)
+                    .font(.system(size: 14, design: .monospaced))
+                    .frame(minHeight: 160)
+                Button("恢复默认") {
+                    store.translationPrompt = AppStore.defaultTranslationPrompt
+                    store.persistSettings()
+                }
+            } footer: {
+                Text("仅「AI 翻译」引擎使用。{{text}} 为待译内容，{{lang}} 为目标语言名称。")
+            }
+        }
+        .navigationTitle("AI 翻译")
+        .navigationBarTitleDisplayMode(.inline)
+        .appFormChrome()
+        .onDisappear { store.persistSettings() }
+        .onChange(of: store.translationPrompt) { _, _ in store.persistSettings() }
+    }
+}
+
+/// 三级：高质量重译审校
+struct RefinementPromptSettingsView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        @Bindable var settings = store.settings
+        Form {
+            Section {
+                TextEditor(text: $settings.translationRefinementPrompt)
+                    .font(.system(size: 14, design: .monospaced))
+                    .frame(minHeight: 200)
+                Button("恢复默认") {
+                    store.translationRefinementPrompt = AppStore.defaultTranslationRefinementPrompt
+                    store.persistSettings()
+                }
+            } footer: {
+                Text("阅读页「更高质量重新翻译」：先机器初译，再由 AI 对照原文审校。占位符：{{source}} / {{SOURCE_TEXT}}、{{translation}} / {{INITIAL_TRANSLATION}}、{{lang}}。只输出最终译文。")
+            }
+        }
+        .navigationTitle("高质量重译")
+        .navigationBarTitleDisplayMode(.inline)
+        .appFormChrome()
+        .onDisappear { store.persistSettings() }
+        .onChange(of: store.translationRefinementPrompt) { _, _ in store.persistSettings() }
+    }
+}
+
+/// 三级：解释
+struct ExplainPromptSettingsView: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        @Bindable var settings = store.settings
+        Form {
+            Section {
+                TextEditor(text: $settings.explainPrompt)
+                    .font(.system(size: 14, design: .monospaced))
+                    .frame(minHeight: 160)
+                Button("恢复默认") {
+                    store.explainPrompt = AppStore.defaultExplainPrompt
+                    store.persistSettings()
+                }
+            } footer: {
+                Text("{{text}} 为选中内容；{{lang}} 为 AI 输出语言。")
+            }
+        }
+        .navigationTitle("解释")
+        .navigationBarTitleDisplayMode(.inline)
+        .appFormChrome()
+        .onDisappear { store.persistSettings() }
+        .onChange(of: store.explainPrompt) { _, _ in store.persistSettings() }
+    }
+}
 
 // MARK: - Prompt 预设管理
 

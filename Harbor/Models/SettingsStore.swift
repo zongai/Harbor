@@ -55,6 +55,8 @@ final class SettingsStore {
     var feedSortMode: FeedSortMode = .unreadThenTitle
     var targetLanguage: AppLanguage = .zhHans
     var translationConcurrency: Int = 0
+    /// 译文是否为目标语言；否时换引擎重译（默认开）
+    var verifyTranslationLanguage: Bool = true
     var aiOutputLanguage: AppLanguage = .zhHans
     var microsoftTranslateRegion: String = "global"
     var lingvaCustomBase: String = ""

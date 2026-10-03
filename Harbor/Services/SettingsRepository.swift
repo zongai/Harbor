@@ -41,6 +41,7 @@ struct PersistedAppSettings: Codable {
     var feedSortModeRaw: String = ""
     var targetLanguage: AppLanguage = .zhHans
     var translationConcurrency: Int = 0
+    var verifyTranslationLanguage: Bool = true
     var microsoftTranslateRegion: String = "global"
     var lingvaCustomBase: String = ""
     var aiOutputLanguage: AppLanguage = .zhHans
@@ -105,6 +106,7 @@ enum SettingsRepository {
         if !s.feedSortModeRaw.isEmpty { d.set(s.feedSortModeRaw, forKey: "feedSortMode") }
         d.set(s.targetLanguage.rawValue, forKey: "targetLanguage")
         d.set(s.translationConcurrency, forKey: "translationConcurrency")
+        d.set(s.verifyTranslationLanguage, forKey: "verifyTranslationLanguage")
         d.set(s.microsoftTranslateRegion, forKey: "microsoftTranslateRegion")
         d.set(s.lingvaCustomBase, forKey: "lingvaCustomBase")
         d.set(s.aiOutputLanguage.rawValue, forKey: "aiOutputLanguage")
@@ -225,6 +227,9 @@ enum SettingsRepository {
         }
         if d.object(forKey: "translationConcurrency") != nil {
             s.translationConcurrency = min(8, max(0, d.integer(forKey: "translationConcurrency")))
+        }
+        if d.object(forKey: "verifyTranslationLanguage") != nil {
+            s.verifyTranslationLanguage = d.bool(forKey: "verifyTranslationLanguage")
         }
         if let raw = d.string(forKey: "aiOutputLanguage"),
            let lang = AppLanguage(rawValue: raw) {

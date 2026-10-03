@@ -253,6 +253,11 @@ class AppStore: AIService.Runtime {
         get { settings.translationConcurrency }
         set { settings.translationConcurrency = newValue }
     }
+    var verifyTranslationLanguage: Bool {
+        get { settings.verifyTranslationLanguage }
+        set { settings.verifyTranslationLanguage = newValue }
+    }
+
 
     var aiOutputLanguage: AppLanguage {
         get { settings.aiOutputLanguage }
@@ -830,6 +835,7 @@ class AppStore: AIService.Runtime {
         var aiOutputLanguage: String?
         var translationEngineChain: [String]?
         var translationConcurrency: Int?
+        var verifyTranslationLanguage: Bool?
         var microsoftTranslateRegion: String?
         var lingvaCustomBase: String?
         var globalSummaryPresetID: String?
@@ -914,6 +920,7 @@ class AppStore: AIService.Runtime {
             aiOutputLanguage: aiOutputLanguage.rawValue,
             translationEngineChain: translationEngineChain.map(\.rawValue),
             translationConcurrency: translationConcurrency,
+            verifyTranslationLanguage: verifyTranslationLanguage,
             microsoftTranslateRegion: microsoftTranslateRegion,
             lingvaCustomBase: lingvaCustomBase,
             globalSummaryPresetID: globalSummaryPresetID,
@@ -1033,6 +1040,9 @@ class AppStore: AIService.Runtime {
         }
         if let n = payload.translationConcurrency {
             translationConcurrency = max(0, n)
+        }
+        if let v = payload.verifyTranslationLanguage {
+            verifyTranslationLanguage = v
         }
         if let region = payload.microsoftTranslateRegion {
             microsoftTranslateRegion = region
@@ -3033,13 +3043,17 @@ class AppStore: AIService.Runtime {
                 targetLang: targetLanguage,
                 provider: engine.rawValue
             ), !cached.isEmpty {
-                lastUsedTranslationEngine = engine
-                return cached
+                if isAcceptableTranslation(cached, source: trimmed) {
+                    lastUsedTranslationEngine = engine
+                    return cached
+                }
+                // 缓存译文不像目标语：跳过，走引擎重译
             }
         }
 
         let chain = effectiveTranslationChain().filter { !excluding.contains($0) }
         var lastError: Error = TranslationError.apiError("没有可用的翻译引擎")
+        var lastRejected: String?
         for engine in chain {
             guard isTranslationEngineReady(engine) else { continue }
             do {
@@ -3048,6 +3062,10 @@ class AppStore: AIService.Runtime {
                 // API 结果若仍是另一侧中文，再做一次本地简繁对齐
                 if ChineseScript.needsConversion(text: result, to: targetLanguage) {
                     result = ChineseScript.convert(result, to: targetLanguage)
+                }
+                if !isAcceptableTranslation(result, source: trimmed) {
+                    lastRejected = result
+                    continue
                 }
                 lastUsedTranslationEngine = engine
                 TranslationCache.set(
@@ -3067,7 +3085,29 @@ class AppStore: AIService.Runtime {
                 continue
             }
         }
+        // 全部引擎语种校验未过：退回最后一次拒收结果，避免整段空白
+        if let rejected = lastRejected, !rejected.isEmpty {
+            return rejected
+        }
         throw lastError
+    }
+
+    /// 判断译文是否已是目标语言（可关：设置 → 翻译 → 校验译文语种）
+    func isAcceptableTranslation(_ result: String, source: String) -> Bool {
+        guard verifyTranslationLanguage else { return true }
+        let r = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        let s = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !r.isEmpty else { return false }
+        // 过短或几乎无字母：跳过启发式（URL、数字、符号）
+        let letters = r.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        if letters < 6 { return true }
+        // 源文已是目标语则允许“几乎不变”
+        if ListLanguageDetect.isMostlyTarget(s, language: targetLanguage) {
+            return true
+        }
+        // 原样回显且源文非目标语 → 视为失败
+        if r == s { return false }
+        return ListLanguageDetect.isMostlyTarget(r, language: targetLanguage)
     }
 
     /// 解析实际并发度：显式参数 > 用户设置 > 引擎默认（偏稳，避免限流导致大片失败）
@@ -3199,13 +3239,19 @@ class AppStore: AIService.Runtime {
             let exclude: Set<TranslationEngine> = usedPrimary ? [primary] : []
             apiResults = await fillMissingTranslations(apiResults, texts: apiTexts, excluding: exclude, concurrency: limit)
         }
-        // 批量结果润色 + 简繁对齐 + 写入缓存
+        // 批量结果润色 + 简繁对齐 + 语种校验 + 写入缓存
         let providerKey = primary.rawValue
         for j in apiResults.indices {
             guard let raw = apiResults[j], !raw.isEmpty else { continue }
             var polished = TranslationPolish.polish(raw, targetLang: lang)
             if ChineseScript.needsConversion(text: polished, to: lang) {
                 polished = ChineseScript.convert(polished, to: lang)
+            }
+            let source = j < apiTexts.count ? apiTexts[j] : ""
+            if !isAcceptableTranslation(polished, source: source) {
+                // 留空走引擎链补译
+                apiResults[j] = nil
+                continue
             }
             apiResults[j] = polished
             if j < apiTexts.count {
@@ -4206,6 +4252,7 @@ class AppStore: AIService.Runtime {
             feedSortModeRaw: feedSortMode.rawValue,
             targetLanguage: targetLanguage,
             translationConcurrency: translationConcurrency,
+            verifyTranslationLanguage: verifyTranslationLanguage,
             microsoftTranslateRegion: microsoftTranslateRegion,
             lingvaCustomBase: lingvaCustomBase,
             aiOutputLanguage: aiOutputLanguage,
@@ -4290,6 +4337,7 @@ class AppStore: AIService.Runtime {
         }
         targetLanguage = s.targetLanguage
         translationConcurrency = s.translationConcurrency
+        verifyTranslationLanguage = s.verifyTranslationLanguage
         microsoftTranslateRegion = s.microsoftTranslateRegion
         lingvaCustomBase = s.lingvaCustomBase
         aiOutputLanguage = s.aiOutputLanguage

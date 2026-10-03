@@ -18,9 +18,6 @@ struct ContentView: View {
             Tab("订阅", systemImage: "newspaper") {
                 FeedsListView()
             }
-            Tab("搜索", systemImage: "magnifyingglass") {
-                SearchView()
-            }
             Tab("对话", systemImage: "bubble.left.and.bubble.right") {
                 AIChatView()
             }
