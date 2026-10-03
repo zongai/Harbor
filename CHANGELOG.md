@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3-121] — feature/epub-opds
+
+相对：`v1.3-120`
+
+### Added
+- **Wi‑Fi 预缓存全文与图片**：刷新后静默预抓未读全文及正文图；设置 → 存储可开关/限额/手动触发
+- NetworkReachability：`isWiFi` / 昂贵与受限网络判定
+
+### Changed
+- 订阅刷新：总并发 8、**按域名限流**、**滑动窗口**调度；304 跳过解析
+- 书架：网格对齐、无披露箭头、`NavigationPath` 进出阅读
+- 全文获取徽章图标与订阅一致（`newspaper`）
+- 提示词仅保留设置 → AI → 提示词一处入口
+- 首次进书：章节 HTML 进程缓存、进页预热、延后写 lastRead、正文解析阈值门槛下调
+
 ## [1.3-120] — feature/epub-opds
 
 相对：`v1.3-119`

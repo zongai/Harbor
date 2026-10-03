@@ -96,7 +96,7 @@ struct FeedsListView: View {
                                             store.setFeedFetchFullContent(feed.id, enabled: !fullOn)
                                         } label: {
                                             Label(fullOn ? "关闭全文获取" : "开启全文获取",
-                                                  systemImage: fullOn ? "doc.badge.ellipsis" : "doc.richtext")
+                                                  systemImage: fullOn ? "doc.badge.ellipsis" : "newspaper")
                                         }
                                         let commentsOn = store.feeds.first(where: { $0.id == feed.id })?.fetchCommentsEnabled ?? false
                                         Button {
@@ -925,7 +925,7 @@ struct FeedRow: View {
                         }
                         // 仅功能开启时显示图标（含默认开启）
                         if live.fetchFullContentEnabled {
-                            Image(systemName: "doc.richtext")
+                            Image(systemName: "newspaper")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(theme.muted)
                                 .accessibilityLabel("全文获取已开启")

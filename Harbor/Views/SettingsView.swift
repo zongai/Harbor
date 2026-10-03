@@ -58,7 +58,7 @@ struct SettingsView: View {
                     NavigationLink {
                         SubscriptionFullContentSettingsView()
                     } label: {
-                        Label("全文获取", systemImage: "doc.richtext")
+                        Label("全文获取", systemImage: "newspaper")
                     }
                     NavigationLink {
                         SubscriptionContentFilterSettingsView()
@@ -485,6 +485,45 @@ struct StorageSettingsView: View {
                 Text("存储")
             } footer: {
                 Text("已读保留与全文缓存天数在启动与刷新时生效。清除缓存请到设置底部「危险操作」。")
+            }
+
+            Section {
+                Toggle("Wi‑Fi 下预缓存全文与图片", isOn: $settings.wifiPrefetchFullContent)
+                    .onChange(of: store.wifiPrefetchFullContent) { _, on in
+                        store.persistSettings()
+                        if on {
+                            store.scheduleWifiPrefetch(reason: "settingOn")
+                        } else {
+                            store.cancelWifiPrefetch()
+                        }
+                    }
+                if store.wifiPrefetchFullContent {
+                    Toggle("仅未读文章", isOn: $settings.wifiPrefetchUnreadOnly)
+                        .onChange(of: store.wifiPrefetchUnreadOnly) { _, _ in store.persistSettings() }
+                    Stepper(value: $settings.wifiPrefetchMaxArticles, in: 5...100, step: 5) {
+                        Text("每轮最多 \(store.wifiPrefetchMaxArticles) 篇")
+                    }
+                    .onChange(of: store.wifiPrefetchMaxArticles) { _, _ in store.persistSettings() }
+                    if store.isWifiPrefetching {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text(store.wifiPrefetchProgressText.isEmpty ? "预缓存中…" : store.wifiPrefetchProgressText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button("停止") { store.cancelWifiPrefetch() }
+                                .font(.caption)
+                        }
+                    }
+                    Button("立即预缓存") {
+                        store.scheduleWifiPrefetch(reason: "manual")
+                    }
+                    .disabled(store.isWifiPrefetching)
+                }
+            } header: {
+                Text("离线预缓存")
+            } footer: {
+                Text("仅在 Wi‑Fi 且非低数据模式时自动进行。订阅刷新结束后会在后台预抓未读全文与正文图片；蜂窝网络下不会启动。内容缓存超过约 500MB 时自动跳过。")
             }
         }
         .appFormChrome()

@@ -152,8 +152,8 @@ struct ArticleContentView: View {
         let source = html
         let preferCN = prefersChineseTypography
         let title = articleTitle
-        // 短文同步；中长文后台解析，避免原文/译文切换时主线程卡顿（切换期间保留旧 blocks）
-        if source.count < 4_000 {
+        // 短文同步；其余后台解析，避免首次进书 / 切换模式卡主线程（切换期间保留旧 blocks）
+        if source.count < 1_200 {
             cachedBlocks = ContentBlockParser.parse(
                 source,
                 prefersChineseTypography: preferCN,

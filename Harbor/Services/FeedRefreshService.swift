@@ -7,39 +7,57 @@ enum FeedRefreshService {
             let cfg = URLSessionConfiguration.ephemeral
             cfg.timeoutIntervalForRequest = 12
             cfg.timeoutIntervalForResource = 18
-            cfg.httpMaximumConnectionsPerHost = 6
+            // 总并发提高后，单 host 连接数略增；真正限流在 FeedRequestGate
+            cfg.httpMaximumConnectionsPerHost = 4
+            cfg.httpShouldUsePipelining = false
             cfg.waitsForConnectivity = false
             cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
             return URLSession(configuration: cfg)
         }()
-        /// 全量刷新时的并行源数量（与 Gate 协同，避免打爆源站）
-        static let refreshConcurrency = 6
+        /// 全量刷新滑动窗口宽度（与 Gate 总上限对齐）
+        static let refreshConcurrency = 8
     }
 
-    /// 全局限流：同时进行的 Feed HTTP 请求上限（源站友好）
+    /// 全局限流：总并发 + 同域名上限，兼顾速度与源站友好
     actor FeedRequestGate {
         static let shared = FeedRequestGate()
-        private let maxConcurrent = 5
-        private var running = 0
+        private let maxTotal = 8
+        private let maxPerHost = 2
+        private var totalRunning = 0
+        private var hostRunning: [String: Int] = [:]
         private var waiters: [CheckedContinuation<Void, Never>] = []
 
-        func enter() async {
-            if running < maxConcurrent {
-                running += 1
-                return
+        func enter(host: String?) async {
+            let key = Self.hostKey(host)
+            while true {
+                let hc = hostRunning[key] ?? 0
+                if totalRunning < maxTotal && hc < maxPerHost {
+                    totalRunning += 1
+                    hostRunning[key] = hc + 1
+                    return
+                }
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    waiters.append(cont)
+                }
+                // 被唤醒后重新检查容量（可能仍被同 host 占满）
             }
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                waiters.append(cont)
-            }
-            running += 1
         }
 
-        func leave() {
-            running = max(0, running - 1)
-            if !waiters.isEmpty {
-                let cont = waiters.removeFirst()
-                cont.resume()
+        func leave(host: String?) {
+            let key = Self.hostKey(host)
+            totalRunning = max(0, totalRunning - 1)
+            if let c = hostRunning[key] {
+                if c <= 1 { hostRunning.removeValue(forKey: key) }
+                else { hostRunning[key] = c - 1 }
             }
+            if !waiters.isEmpty {
+                waiters.removeFirst().resume()
+            }
+        }
+
+        private static func hostKey(_ host: String?) -> String {
+            let h = host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return h.isEmpty ? "_" : h
         }
     }
 
@@ -96,15 +114,16 @@ enum FeedRefreshService {
         etag: String? = nil,
         lastModified: String? = nil
     ) async throws -> FeedFetchResult {
+        let host = url.host
         if RSSHubSupport.isRSSHubURL(url) {
-            await FeedRequestGate.shared.enter()
-            defer { Task { await FeedRequestGate.shared.leave() } }
+            await FeedRequestGate.shared.enter(host: host)
+            defer { Task { await FeedRequestGate.shared.leave(host: host) } }
             let (data, _) = try await FeedDiscovery.fetchRSSHubFeed(from: url)
             return FeedFetchResult(data: data, etag: nil, lastModified: nil, notModified: false)
         }
 
-        await FeedRequestGate.shared.enter()
-        defer { Task { await FeedRequestGate.shared.leave() } }
+        await FeedRequestGate.shared.enter(host: host)
+        defer { Task { await FeedRequestGate.shared.leave(host: host) } }
 
         var request = URLRequest(url: url, timeoutInterval: 12)
         request.setValue(
@@ -125,8 +144,7 @@ enum FeedRefreshService {
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
         let (data, response) = try await HTTP.session.data(for: request)
-        let host = url.host
-        let http = response as? HTTPURLResponse
+                let http = response as? HTTPURLResponse
         let code = http?.statusCode ?? 0
 
         if code == 304 {
@@ -204,11 +222,10 @@ enum FeedRefreshService {
         }
 
         if fetch.notModified {
-            let cached = OfflineCache.loadFeedXML(url: cacheKey) ?? Data()
-            let articles = cached.isEmpty ? [] : FeedParser.parse(data: cached, feedID: id, feedTitle: title)
+            // 304：不读缓存、不解析，调用方只更新 lastFetched
             return ParsedFeedPayload(
-                data: cached,
-                articles: articles,
+                data: Data(),
+                articles: [],
                 resolvedURL: requestURL,
                 upgradedToHTTPS: upgraded,
                 notModified: true

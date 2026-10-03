@@ -158,6 +158,19 @@ class AppStore: AIService.Runtime {
         get { settings.fullContentCacheDays }
         set { settings.fullContentCacheDays = newValue }
     }
+    var wifiPrefetchFullContent: Bool {
+        get { settings.wifiPrefetchFullContent }
+        set { settings.wifiPrefetchFullContent = newValue }
+    }
+    var wifiPrefetchMaxArticles: Int {
+        get { settings.wifiPrefetchMaxArticles }
+        set { settings.wifiPrefetchMaxArticles = min(100, max(5, newValue)) }
+    }
+    var wifiPrefetchUnreadOnly: Bool {
+        get { settings.wifiPrefetchUnreadOnly }
+        set { settings.wifiPrefetchUnreadOnly = newValue }
+    }
+
 
     var fullContentURLPrefixEnabled: Bool {
         get { settings.fullContentURLPrefixEnabled }
@@ -293,6 +306,12 @@ class AppStore: AIService.Runtime {
         get { chrome.isLoading }
         set { chrome.isLoading = newValue }
     }
+    /// Wi‑Fi 预缓存进行中
+    var isWifiPrefetching = false
+    var wifiPrefetchProgressText: String = ""
+    private var wifiPrefetchTask: Task<Void, Never>?
+    private var wifiPrefetchSession = 0
+
     var isRefreshingAll: Bool {
         get { chrome.isRefreshingAll }
         set { chrome.isRefreshingAll = newValue }
@@ -2140,23 +2159,22 @@ class AppStore: AIService.Runtime {
         var failures: [String] = []
         let limit = max(1, FeedRefreshService.HTTP.refreshConcurrency)
         var completed = 0
-        // 按批次并行，避免同时打满所有源
-        var offset = 0
         var cancelled = false
-        while offset < snapshot.count {
-            if session != refreshSessionID {
-                cancelled = true
-                break
-            }
-            let end = min(offset + limit, snapshot.count)
-            let batch = Array(snapshot[offset..<end])
-            await withTaskGroup(of: (UUID, String, Result<FeedRefreshService.ParsedFeedPayload, Error>).self) { group in
-                for feed in batch {
+        // 滑动窗口：完成一个立刻补一个，减少「整批被最慢源拖住」
+        await withTaskGroup(of: (UUID, String, Result<FeedRefreshService.ParsedFeedPayload, Error>).self) { group in
+            var nextIndex = 0
+            var inFlight = 0
+
+            func spawnAvailable() {
+                while inFlight < limit && nextIndex < snapshot.count {
+                    if session != refreshSessionID { return }
+                    let feed = snapshot[nextIndex]
+                    nextIndex += 1
+                    inFlight += 1
                     let title = feed.title.isEmpty ? "未命名源" : feed.title
                     let id = feed.id
                     let urlStr = feed.url
                     group.addTask {
-                        // 非 MainActor：只做网络 + 解析；取消在主线程 for-await 中丢弃结果
                         guard let url = NetworkURLPolicy.validate(urlStr) else {
                             let err = NSError(
                                 domain: "Harbor.FeedRefresh",
@@ -2178,67 +2196,69 @@ class AppStore: AIService.Runtime {
                         }
                     }
                 }
-                for await (id, title, outcome) in group {
-                    if session != refreshSessionID {
-                        cancelled = true
-                        group.cancelAll()
-                        break
+            }
+
+            spawnAvailable()
+            for await (id, title, outcome) in group {
+                inFlight = max(0, inFlight - 1)
+                if session != refreshSessionID {
+                    cancelled = true
+                    group.cancelAll()
+                    break
+                }
+                completed += 1
+                refreshProgressCurrent = completed
+                refreshProgressTitle = title
+                switch outcome {
+                case .success(let payload):
+                    if payload.notModified {
+                        if let i = feeds.firstIndex(where: { $0.id == id }) {
+                            feeds[i].lastFetched = Date()
+                        }
+                        clearFeedRefreshError(id, persist: false)
+                    } else {
+                        applyParsedFeed(
+                            data: payload.data,
+                            preParsedArticles: payload.articles,
+                            feedID: id,
+                            urlStr: feeds.first(where: { $0.id == id })?.url ?? "",
+                            persist: false
+                        )
+                        if payload.upgradedToHTTPS,
+                           let i = feeds.firstIndex(where: { $0.id == id }) {
+                            feeds[i].url = payload.resolvedURL.absoluteString
+                        }
+                        clearFeedRefreshError(id, persist: false)
                     }
-                    completed += 1
-                    refreshProgressCurrent = completed
-                    refreshProgressTitle = title
-                    switch outcome {
-                    case .success(let payload):
-                        if payload.notModified {
-                            if let i = feeds.firstIndex(where: { $0.id == id }) {
-                                feeds[i].lastFetched = Date()
-                            }
-                            clearFeedRefreshError(id, persist: false)
-                        } else {
-                            applyParsedFeed(
-                                data: payload.data,
-                                preParsedArticles: payload.articles,
-                                feedID: id,
-                                urlStr: feeds.first(where: { $0.id == id })?.url ?? "",
-                                persist: false
-                            )
-                            if payload.upgradedToHTTPS,
-                               let i = feeds.firstIndex(where: { $0.id == id }) {
-                                feeds[i].url = payload.resolvedURL.absoluteString
-                            }
-                            clearFeedRefreshError(id, persist: false)
-                        }
-                    case .failure(let error):
-                        let urlStr = feeds.first(where: { $0.id == id })?.url ?? ""
-                        if let cached = OfflineCache.loadFeedXML(url: urlStr), !cached.isEmpty {
-                            let articles = await FeedRefreshService.parseOffline(
-                                data: cached,
-                                feedID: id,
-                                feedTitle: title
-                            )
-                            applyParsedFeed(
-                                data: cached,
-                                preParsedArticles: articles,
-                                feedID: id,
-                                urlStr: urlStr,
-                                persist: false
-                            )
-                            let detail = Self.friendlyNetworkError(error)
-                            let reason = "已用本地缓存（\(detail)）"
-                            setFeedRefreshError(id, reason: reason, persist: false)
-                            failures.append("「\(title)」：\(reason)")
-                        } else {
-                            let reason = Self.friendlyNetworkError(error)
-                            setFeedRefreshError(id, reason: reason, persist: false)
-                            failures.append("「\(title)」：\(reason)")
-                        }
+                case .failure(let error):
+                    let urlStr = feeds.first(where: { $0.id == id })?.url ?? ""
+                    if let cached = OfflineCache.loadFeedXML(url: urlStr), !cached.isEmpty {
+                        let articles = await FeedRefreshService.parseOffline(
+                            data: cached,
+                            feedID: id,
+                            feedTitle: title
+                        )
+                        applyParsedFeed(
+                            data: cached,
+                            preParsedArticles: articles,
+                            feedID: id,
+                            urlStr: urlStr,
+                            persist: false
+                        )
+                        let detail = Self.friendlyNetworkError(error)
+                        let reason = "已用本地缓存（\(detail)）"
+                        setFeedRefreshError(id, reason: reason, persist: false)
+                        failures.append("「\(title)」：\(reason)")
+                    } else {
+                        let reason = Self.friendlyNetworkError(error)
+                        setFeedRefreshError(id, reason: reason, persist: false)
+                        failures.append("「\(title)」：\(reason)")
                     }
                 }
+                if !cancelled {
+                    spawnAvailable()
+                }
             }
-            if cancelled { break }
-            offset = end
-            // 批次间让出主线程，降低列表卡顿
-            await Task.yield()
         }
         // 全部源刷新完后统一落盘，避免每源写一次磁盘
         purgeOldReadArticles()
@@ -2270,6 +2290,10 @@ class AppStore: AIService.Runtime {
             let preview = failures.prefix(3).joined(separator: "；")
             let extra = failures.count > 3 ? "；…共 \(failures.count) 个源失败" : ""
             errorMessage = preview + extra
+        }
+        // 刷新成功跑完后：Wi‑Fi 下静默预缓存全文与图片
+        if !cancelled {
+            scheduleWifiPrefetch(reason: "afterRefresh")
         }
     }
 
@@ -4067,6 +4091,144 @@ class AppStore: AIService.Runtime {
         return try await task.value
     }
 
+
+    // MARK: - Wi‑Fi 全文 / 图片预缓存
+
+    /// 刷新结束后或手动触发：仅在 Wi‑Fi 且设置开启时后台预缓存
+    func scheduleWifiPrefetch(reason: String = "auto") {
+        guard wifiPrefetchFullContent else { return }
+        guard NetworkReachability.shared.isPrefetchAllowed else { return }
+        // 内容缓存过大则先不预抓（约 500MB）
+        if OfflineCache.contentCacheSize() > 500 * 1024 * 1024 { return }
+        wifiPrefetchTask?.cancel()
+        wifiPrefetchSession &+= 1
+        let session = wifiPrefetchSession
+        wifiPrefetchTask = Task { @MainActor in
+            await runWifiPrefetch(session: session)
+        }
+    }
+
+    func cancelWifiPrefetch() {
+        wifiPrefetchSession &+= 1
+        wifiPrefetchTask?.cancel()
+        wifiPrefetchTask = nil
+        isWifiPrefetching = false
+        wifiPrefetchProgressText = ""
+    }
+
+    private func runWifiPrefetch(session: Int) async {
+        guard session == wifiPrefetchSession else { return }
+        guard wifiPrefetchFullContent, NetworkReachability.shared.isPrefetchAllowed else { return }
+
+        let candidates = wifiPrefetchCandidates()
+        guard !candidates.isEmpty else { return }
+
+        isWifiPrefetching = true
+        wifiPrefetchProgressText = "预缓存 0/\(candidates.count)"
+        defer {
+            if session == wifiPrefetchSession {
+                isWifiPrefetching = false
+                wifiPrefetchProgressText = ""
+            }
+        }
+
+        let concurrency = 2
+        var done = 0
+        let total = candidates.count
+        await withTaskGroup(of: Void.self) { group in
+            var next = 0
+            var inFlight = 0
+            func addWork() {
+                while inFlight < concurrency && next < total {
+                    if session != wifiPrefetchSession { return }
+                    if !NetworkReachability.shared.isPrefetchAllowed { return }
+                    let article = candidates[next]
+                    next += 1
+                    inFlight += 1
+                    group.addTask { @MainActor in
+                        await self.prefetchOneArticle(article)
+                    }
+                }
+            }
+            addWork()
+            for await _ in group {
+                inFlight = max(0, inFlight - 1)
+                done += 1
+                if session == wifiPrefetchSession {
+                    wifiPrefetchProgressText = "预缓存 \(done)/\(total)"
+                }
+                if session != wifiPrefetchSession { group.cancelAll(); break }
+                if !NetworkReachability.shared.isPrefetchAllowed { group.cancelAll(); break }
+                addWork()
+            }
+        }
+    }
+
+    private func wifiPrefetchCandidates() -> [Article] {
+        let maxN = min(100, max(5, wifiPrefetchMaxArticles))
+        var list: [Article] = []
+        for feed in feeds {
+            guard feed.fetchFullContentEnabled else { continue }
+            let sorted = feed.articles.sorted {
+                ($0.publishedDate ?? .distantPast) > ($1.publishedDate ?? .distantPast)
+            }
+            var perFeed = 0
+            for a in sorted {
+                if perFeed >= 5 { break }
+                if wifiPrefetchUnreadOnly {
+                    let key = Self.canonicalLink(a.link)
+                    if !key.isEmpty, readArticleLinks.contains(key) { continue }
+                    if a.isRead { continue }
+                }
+                if a.hasFullContent || OfflineCache.hasArticleBody(link: a.link) { continue }
+                list.append(a)
+                perFeed += 1
+            }
+        }
+        list.sort { ($0.publishedDate ?? .distantPast) > ($1.publishedDate ?? .distantPast) }
+        if list.count > maxN {
+            return Array(list.prefix(maxN))
+        }
+        return list
+    }
+
+    private func prefetchOneArticle(_ article: Article) async {
+        // 全文
+        do {
+            let full = try await fetchFullContent(for: article, force: false)
+            await prefetchImages(fromHTML: full.content, baseLink: article.link)
+        } catch {
+            // 静默失败，不打扰用户
+        }
+    }
+
+    private func prefetchImages(fromHTML html: String, baseLink: String) async {
+        let urls = OfflineCache.imageURLs(in: html, baseLink: baseLink)
+        guard !urls.isEmpty else { return }
+        let limit = min(12, urls.count)
+        let slice = Array(urls.prefix(limit))
+        await withTaskGroup(of: Void.self) { group in
+            var next = 0
+            var inFlight = 0
+            let maxImg = 2
+            func spawn() {
+                while inFlight < maxImg && next < slice.count {
+                    let u = slice[next]
+                    next += 1
+                    inFlight += 1
+                    group.addTask {
+                        await OfflineCache.downloadAndStoreImage(url: u)
+                    }
+                }
+            }
+            spawn()
+            for await _ in group {
+                inFlight = max(0, inFlight - 1)
+                spawn()
+            }
+        }
+    }
+
     func clearOfflineContentCache() { OfflineCache.clearContentCache() }
     func cacheSizeDescription() -> String { OfflineCache.formattedSize(OfflineCache.contentCacheSize()) }
 
@@ -4264,6 +4426,9 @@ class AppStore: AIService.Runtime {
             articleBlacklistTerms: articleBlacklistTerms,
             aiBlacklistFallbackProviderID: aiBlacklistFallbackProviderID,
             defaultChatProviderID: defaultChatProviderID,
+            wifiPrefetchFullContent: wifiPrefetchFullContent,
+            wifiPrefetchMaxArticles: wifiPrefetchMaxArticles,
+            wifiPrefetchUnreadOnly: wifiPrefetchUnreadOnly,
             bookDefaultReadingMode: settings.bookDefaultReadingMode,
             bookTTSRate: settings.bookTTSRate,
             bookAutoLanguageVoice: settings.bookAutoLanguageVoice
@@ -4294,6 +4459,9 @@ class AppStore: AIService.Runtime {
         )
         readRetentionDays = s.readRetentionDays
         fullContentCacheDays = s.fullContentCacheDays
+        wifiPrefetchFullContent = s.wifiPrefetchFullContent
+        wifiPrefetchMaxArticles = min(100, max(5, s.wifiPrefetchMaxArticles))
+        wifiPrefetchUnreadOnly = s.wifiPrefetchUnreadOnly
         fullContentURLPrefixEnabled = s.fullContentURLPrefixEnabled
         fullContentURLPrefix = s.fullContentURLPrefix
         globalSummaryPresetID = s.globalSummaryPresetID

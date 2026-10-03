@@ -121,19 +121,6 @@ struct AISettingsView: View {
                 Text("摘要 / AI 翻译 / AI 解释各自使用的 Provider。解释选「跟随摘要引擎」时与摘要共用。AI 输出语言用于摘要与解释（与翻译目标语言独立）。")
             }
 
-            // MARK: 提示词（二级入口 → 三级具体编辑）
-            Section {
-                NavigationLink {
-                    AIPromptsRootView()
-                } label: {
-                    Label("提示词", systemImage: "text.bubble")
-                }
-            } header: {
-                Text("提示词")
-            } footer: {
-                Text("摘要模板、AI 翻译、高质量重译审校与解释的 Prompt。点进入后选择具体类型编辑。")
-            }
-
             // MARK: 路由与费用
             Section {
                 Toggle("模型费用路由", isOn: $settings.modelRoutingEnabled)

@@ -36,6 +36,12 @@ final class SettingsStore {
     var explainPrompt: String = AppStore.defaultExplainPrompt
     var readRetentionDays: Int = 7
     var fullContentCacheDays: Int = 30
+    /// Wi‑Fi 下预缓存全文与图片（默认开）
+    var wifiPrefetchFullContent: Bool = true
+    /// 每轮最多预缓存文章数
+    var wifiPrefetchMaxArticles: Int = 30
+    /// 仅预缓存未读
+    var wifiPrefetchUnreadOnly: Bool = true
     var fullContentURLPrefixEnabled: Bool = false
     var fullContentURLPrefix: String = ""
     var globalSummaryPresetID: String = SummaryPromptPreset.standardID

@@ -625,8 +625,19 @@ struct BookReaderView: View {
         pendingScrollRestore = savedScroll > 0.02 ? savedScroll : nil
         didRestoreScroll = pendingScrollRestore == nil
         scrollProgress = savedScroll
+        // 进程缓存命中则同步上屏，避免首帧白屏等待
+        if let ch = currentChapter {
+            let dir = BookLibrary.bookDirectory(id: b.id)
+            if let warm = EPUBParser.cachedChapterHTML(bookDirectory: dir, href: ch.href), !warm.isEmpty {
+                chapterHTMLCache[ch.id] = warm
+            }
+        }
         Task { await loadCurrentChapter() }
-        touchLastRead()
+        // 延后写 lastRead，避免与首章读盘/解析抢主线程与磁盘
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            touchLastRead()
+        }
     }
 
     private func selectChapter(_ idx: Int) {

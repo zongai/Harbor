@@ -288,6 +288,66 @@ enum OfflineCache {
 
     // MARK: - Favicon（与内容缓存隔离，清理其他缓存不删除）
 
+
+    /// 从正文 HTML 提取图片 URL（最多扫描全文，调用方再截断）
+    static func imageURLs(in html: String, baseLink: String) -> [URL] {
+        let pattern = #"<img\b[^>]*?\bsrc\s*=\s*['"]([^'"]+)['"]"#
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        let ns = html as NSString
+        let matches = re.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        var seen = Set<String>()
+        var out: [URL] = []
+        let base = URL(string: normalizeLink(baseLink))
+        for m in matches {
+            guard m.numberOfRanges >= 2,
+                  let r = Range(m.range(at: 1), in: html) else { continue }
+            var raw = String(html[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.isEmpty || raw.hasPrefix("data:") { continue }
+            // srcset 取第一段
+            if raw.contains(" ") { raw = String(raw.split(separator: " ").first ?? Substring(raw)) }
+            let absolute: URL?
+            if let u = URL(string: raw), u.scheme != nil {
+                absolute = u
+            } else if let base {
+                absolute = URL(string: raw, relativeTo: base)?.absoluteURL
+            } else {
+                absolute = URL(string: raw)
+            }
+            guard let url = absolute,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { continue }
+            let key = url.absoluteString
+            if seen.insert(key).inserted {
+                out.append(url)
+            }
+        }
+        return out
+    }
+
+    /// 下载并写入图片缓存；已有缓存则跳过。单文件超过 2MB 丢弃。
+    static func downloadAndStoreImage(url: URL) async {
+        let key = url.absoluteString
+        if loadImage(url: key) != nil { return }
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.cachePolicy = .returnCacheDataElseLoad
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                return
+            }
+            guard data.count > 32, data.count <= 2 * 1024 * 1024 else { return }
+            // 粗滤：拒绝明显 HTML
+            if data.starts(with: Data("<!".utf8)) || data.starts(with: Data("<html".utf8)) { return }
+            saveImage(url: key, data: data)
+        } catch {
+            return
+        }
+    }
+
     static func saveFavicon(key raw: String, data: Data) {
         guard !raw.isEmpty else { return }
         let file = faviconDir.appendingPathComponent(key(for: raw) + ".bin")

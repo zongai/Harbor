@@ -22,6 +22,9 @@ struct PersistedAppSettings: Codable {
     var explainPrompt: String = AppStore.defaultExplainPrompt
     var readRetentionDays: Int = 7
     var fullContentCacheDays: Int = 30
+    var wifiPrefetchFullContent: Bool = true
+    var wifiPrefetchMaxArticles: Int = 30
+    var wifiPrefetchUnreadOnly: Bool = true
     var fullContentURLPrefixEnabled: Bool = false
     var fullContentURLPrefix: String = ""
     var globalSummaryPresetID: String = SummaryPromptPreset.standardID
@@ -80,6 +83,9 @@ enum SettingsRepository {
         d.set(s.explainPrompt, forKey: "explainPrompt")
         d.set(s.readRetentionDays, forKey: "readRetentionDays")
         d.set(s.fullContentCacheDays, forKey: "fullContentCacheDays")
+        d.set(s.wifiPrefetchFullContent, forKey: "wifiPrefetchFullContent")
+        d.set(s.wifiPrefetchMaxArticles, forKey: "wifiPrefetchMaxArticles")
+        d.set(s.wifiPrefetchUnreadOnly, forKey: "wifiPrefetchUnreadOnly")
         d.set(s.fullContentURLPrefixEnabled, forKey: "fullContentURLPrefixEnabled")
         d.set(s.fullContentURLPrefix, forKey: "fullContentURLPrefix")
         d.set(s.globalSummaryPresetID, forKey: "globalSummaryPresetID")
@@ -181,6 +187,15 @@ enum SettingsRepository {
         if let p = d.string(forKey: "explainPrompt") { s.explainPrompt = p }
         s.readRetentionDays = d.object(forKey: "readRetentionDays") as? Int ?? 7
         s.fullContentCacheDays = d.object(forKey: "fullContentCacheDays") as? Int ?? 30
+        if d.object(forKey: "wifiPrefetchFullContent") != nil {
+            s.wifiPrefetchFullContent = d.bool(forKey: "wifiPrefetchFullContent")
+        }
+        if d.object(forKey: "wifiPrefetchMaxArticles") != nil {
+            s.wifiPrefetchMaxArticles = min(100, max(5, d.integer(forKey: "wifiPrefetchMaxArticles")))
+        }
+        if d.object(forKey: "wifiPrefetchUnreadOnly") != nil {
+            s.wifiPrefetchUnreadOnly = d.bool(forKey: "wifiPrefetchUnreadOnly")
+        }
         s.fullContentURLPrefixEnabled = d.object(forKey: "fullContentURLPrefixEnabled") as? Bool ?? false
         s.fullContentURLPrefix = d.string(forKey: "fullContentURLPrefix") ?? ""
         if let data = d.data(forKey: "summaryPromptPresets"),

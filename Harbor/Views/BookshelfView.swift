@@ -22,6 +22,8 @@ struct BookshelfView: View {
     @State private var batchPickerKind: BookBatchKind = .translate
     @State private var batchStartChapterIndex: Int = 0
     @State private var batchWorkingBookID: UUID?
+    /// 显式导航栈，避免透明 NavigationLink 导致返回异常
+    @State private var path = NavigationPath()
 
     private var recentBooks: [Book] {
         library.books
@@ -32,14 +34,16 @@ struct BookshelfView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if !recentBooks.isEmpty {
                     Section("最近阅读") {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 12) {
                                 ForEach(recentBooks) { book in
-                                    NavigationLink(value: book.id) {
+                                    Button {
+                                        openBook(book)
+                                    } label: {
                                         BookGridCell(
                                             book: book,
                                             batchProgress: batchProgress(for: book.id),
@@ -50,6 +54,7 @@ struct BookshelfView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .contextMenu { bookContextMenu(book) }
+                                    .accessibilityLabel(book.title)
                                 }
                             }
                             .padding(.vertical, 4)
@@ -213,9 +218,10 @@ struct BookshelfView: View {
         } else {
             LazyVGrid(
                 columns: [
-                    GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 14, alignment: .top)
+                    GridItem(.adaptive(minimum: 108, maximum: 120), spacing: 16, alignment: .top)
                 ],
-                spacing: 16
+                alignment: .leading,
+                spacing: 18
             ) {
                 ForEach(library.books) { book in
                     bookGridLink(book)
@@ -230,7 +236,9 @@ struct BookshelfView: View {
     @ViewBuilder
     private func bookGridLink(_ book: Book) -> some View {
         let isWorking = batchWorkingBookID == book.id
-        NavigationLink(value: book.id) {
+        Button {
+            openBook(book)
+        } label: {
             BookGridCell(
                 book: book,
                 batchProgress: batchProgress(for: book.id),
@@ -240,9 +248,29 @@ struct BookshelfView: View {
         }
         .buttonStyle(.plain)
         .contextMenu { bookContextMenu(book) }
+        .accessibilityLabel(book.title)
+    }
+
+    /// 进入阅读：立即 push，并后台预热当前章 HTML
+    private func openBook(_ book: Book) {
+        path.append(book.id)
+        let dir = BookLibrary.bookDirectory(id: book.id)
+        let chapters = book.chapters.sorted(by: { $0.index < $1.index })
+        let href: String? = {
+            if let last = book.lastChapterID,
+               let ch = chapters.first(where: { $0.id == last }) {
+                return ch.href
+            }
+            return chapters.first?.href
+        }()
+        guard let href else { return }
+        Task.detached(priority: .userInitiated) {
+            EPUBParser.warmChapterHTML(bookDirectory: dir, href: href)
+        }
     }
 
     private func cancelBatch() {
+
         batchTask?.cancel()
         bookBatchTTS.stop()
         if let id = batchWorkingBookID {
@@ -475,12 +503,14 @@ private struct BookGridCell: View {
 
     private var coverWidth: CGFloat { compact ? 72 : 108 }
     private var coverHeight: CGFloat { compact ? 100 : 150 }
+    /// 固定标题区高度，保证网格行底对齐
+    private var titleBlockHeight: CGFloat { compact ? 32 : 36 }
+    private var metaBlockHeight: CGFloat { compact ? 0 : 32 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottom) {
                 cover
-                // 任务进行中：封面底部细条 + 文案（不再用行底进度条）
                 if let batchProgress {
                     VStack(spacing: 2) {
                         ProgressView(value: min(1, max(0, batchProgress)))
@@ -504,6 +534,7 @@ private struct BookGridCell: View {
                     )
                 }
             }
+            .frame(width: coverWidth, height: coverHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .topTrailing) {
                 if let onCancelBatch, batchProgress != nil {
@@ -523,24 +554,23 @@ private struct BookGridCell: View {
                 .foregroundStyle(theme.text)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: coverWidth, height: titleBlockHeight, alignment: .topLeading)
 
             if !compact {
-                HStack(spacing: 4) {
-                    if let author = book.author, !author.isEmpty {
-                        Text(author)
-                            .lineLimit(1)
-                    }
-                    if book.readingProgress > 0.01 {
-                        if book.author != nil { Text("·") }
-                        Text(book.progressPercentText)
-                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(book.author?.isEmpty == false ? (book.author ?? "") : " ")
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                    Text(book.readingProgress > 0.01 ? book.progressPercentText : " ")
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
                 }
-                .font(AppTypography.caption())
-                .foregroundStyle(theme.muted)
+                .frame(width: coverWidth, height: metaBlockHeight, alignment: .topLeading)
             }
         }
-        .frame(width: compact ? coverWidth : nil, alignment: .leading)
+        .frame(width: coverWidth, alignment: .topLeading)
     }
 
     @ViewBuilder

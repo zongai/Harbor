@@ -161,19 +161,59 @@ enum EPUBParser {
         return ParseResult(book: book, coverData: coverData, extractRootRelative: "")
     }
 
+    /// 进程内章节 HTML 缓存（首次打开后的再进 / 预热共用）
+    private static let htmlCacheLock = NSLock()
+    private static var htmlCache: [String: String] = [:]
+    private static let htmlCacheLimit = 40
+
+    private static func htmlCacheKey(bookDirectory: URL, href: String) -> String {
+        bookDirectory.lastPathComponent + "|" + canonicalizePath(href).lowercased()
+    }
+
+    static func cachedChapterHTML(bookDirectory: URL, href: String) -> String? {
+        htmlCacheLock.lock()
+        defer { htmlCacheLock.unlock() }
+        return htmlCache[htmlCacheKey(bookDirectory: bookDirectory, href: href)]
+    }
+
+    static func storeChapterHTML(_ html: String, bookDirectory: URL, href: String) {
+        guard !html.isEmpty else { return }
+        htmlCacheLock.lock()
+        defer { htmlCacheLock.unlock() }
+        if htmlCache.count >= htmlCacheLimit {
+            // 简单淘汰：清空一半（按插入无序，足够）
+            let keys = Array(htmlCache.keys.prefix(htmlCacheLimit / 2))
+            for k in keys { htmlCache.removeValue(forKey: k) }
+        }
+        htmlCache[htmlCacheKey(bookDirectory: bookDirectory, href: href)] = html
+    }
+
     /// 按章节 href 从已解压目录读取 HTML；失败时回退从 book.epub 按条目名读取
     static func loadChapterHTML(bookDirectory: URL, href: String) -> String? {
+        if let hit = cachedChapterHTML(bookDirectory: bookDirectory, href: href) {
+            return hit
+        }
         let extracted = bookDirectory.appendingPathComponent("extracted", isDirectory: true)
         if let data = readFile(in: extracted, relativePath: href) {
-            return string(from: data)
+            let s = string(from: data)
+            storeChapterHTML(s, bookDirectory: bookDirectory, href: href)
+            return s
         }
         // 回退：直接从原始 epub 读取（不依赖解压路径大小写）
         let epubURL = bookDirectory.appendingPathComponent("book.epub")
         if FileManager.default.fileExists(atPath: epubURL.path),
            let data = readFromEPUB(epubURL, entryPath: href) {
-            return string(from: data)
+            let s = string(from: data)
+            storeChapterHTML(s, bookDirectory: bookDirectory, href: href)
+            return s
         }
         return nil
+    }
+
+    /// 进入阅读前预热（不阻塞 UI）
+    static func warmChapterHTML(bookDirectory: URL, href: String) {
+        if cachedChapterHTML(bookDirectory: bookDirectory, href: href) != nil { return }
+        _ = loadChapterHTML(bookDirectory: bookDirectory, href: href)
     }
 
     private static func readFile(in root: URL, relativePath: String) -> Data? {

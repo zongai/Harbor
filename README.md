@@ -59,7 +59,7 @@
 - SwiftUI Pro 无障碍：合并 VoiceOver 标签、约 44pt 点击区、带标签的 Button/Menu
 
 ### 其它
-- 离线缓存（全文 / Feed 快照 / 图片）；清除缓存保留订阅与已读
+- 离线缓存（全文 / Feed 快照 / 图片）；**Wi‑Fi 下可预缓存**未读全文与正文图；清除缓存保留订阅与已读
 - 设置备份导入 / 导出
 - CI：打 `v*` 标签产出 unsigned IPA 与 Release 说明（不回写文档）
 
