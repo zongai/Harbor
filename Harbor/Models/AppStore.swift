@@ -4131,34 +4131,13 @@ class AppStore: AIService.Runtime {
             }
         }
 
-        // 并发 2：两路交错推进，避免 TaskGroup 闭包与 MainActor 隔离冲突
         let total = candidates.count
-        var nextIndex = 0
-        var done = 0
-
-        await withTaskGroup(of: Void.self) { group in
-            let workers = min(2, total)
-            for _ in 0..<workers {
-                group.addTask { @MainActor in
-                    while true {
-                        guard session == self.wifiPrefetchSession else { return }
-                        guard NetworkReachability.shared.isPrefetchAllowed else { return }
-                        let idx: Int = {
-                            let i = nextIndex
-                            if i >= total { return -1 }
-                            nextIndex = i + 1
-                            return i
-                        }()
-                        guard idx >= 0 else { return }
-                        await self.prefetchOneArticle(candidates[idx])
-                        done += 1
-                        if session == self.wifiPrefetchSession {
-                            self.wifiPrefetchProgressText = "预缓存 \(done)/\(total)"
-                        }
-                    }
-                }
-            }
-            await group.waitForAll()
+        // 串行预抓：避免 TaskGroup 与 MainActor 状态共享问题；单篇内图片仍并发
+        for (i, article) in candidates.enumerated() {
+            guard session == wifiPrefetchSession else { break }
+            guard NetworkReachability.shared.isPrefetchAllowed else { break }
+            await prefetchOneArticle(article)
+            wifiPrefetchProgressText = "预缓存 \(i + 1)/\(total)"
         }
     }
 
@@ -4392,8 +4371,11 @@ class AppStore: AIService.Runtime {
             summaryPrompt: summaryPrompt,
             explainPrompt: explainPrompt,
             readRetentionDays: readRetentionDays,
-            fullContentCacheDays: fullContentCacheDays,
-            fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
+                        fullContentCacheDays: fullContentCacheDays,
+            wifiPrefetchFullContent: wifiPrefetchFullContent,
+            wifiPrefetchMaxArticles: wifiPrefetchMaxArticles,
+            wifiPrefetchUnreadOnly: wifiPrefetchUnreadOnly,
+fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
             fullContentURLPrefix: fullContentURLPrefix,
             globalSummaryPresetID: globalSummaryPresetID,
             summaryPromptPresets: summaryPromptPresets,
@@ -4424,9 +4406,6 @@ class AppStore: AIService.Runtime {
             articleBlacklistTerms: articleBlacklistTerms,
             aiBlacklistFallbackProviderID: aiBlacklistFallbackProviderID,
             defaultChatProviderID: defaultChatProviderID,
-            wifiPrefetchFullContent: wifiPrefetchFullContent,
-            wifiPrefetchMaxArticles: wifiPrefetchMaxArticles,
-            wifiPrefetchUnreadOnly: wifiPrefetchUnreadOnly,
             bookDefaultReadingMode: settings.bookDefaultReadingMode,
             bookTTSRate: settings.bookTTSRate,
             bookAutoLanguageVoice: settings.bookAutoLanguageVoice

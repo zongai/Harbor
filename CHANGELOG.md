@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3-123] — feature/epub-opds
+
+相对：`v1.3-122`
+
+### Fixed
+- `makePersistedSettings` 参数顺序；预缓存改为串行避免并发隔离错误
+
 ## [1.3-122] — feature/epub-opds
 
 相对：`v1.3-121`
