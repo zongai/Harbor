@@ -60,35 +60,7 @@ struct BookshelfView: View {
                 }
 
                 Section("本地书籍") {
-                    if library.books.isEmpty {
-                        Text("尚未导入书籍")
-                            .font(AppTypography.body())
-                            .foregroundStyle(theme.muted)
-                            .listRowBackground(Color.clear)
-                    } else {
-                        LazyVGrid(
-                            columns: [
-                                GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 14, alignment: .top)
-                            ],
-                            spacing: 16
-                        ) {
-                            ForEach(library.books) { book in
-                                NavigationLink(value: book.id) {
-                                    BookGridCell(
-                                        book: book,
-                                        batchProgress: batchProgress(for: book.id),
-                                        batchText: batchText(for: book.id),
-                                        onCancelBatch: batchWorkingBookID == book.id ? cancelBatch : nil
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .contextMenu { bookContextMenu(book) }
-                            }
-                        }
-                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                    }
+                    localBooksSectionContent
                 }
 
                 Section("OPDS") {
@@ -228,6 +200,46 @@ struct BookshelfView: View {
     private func batchText(for id: UUID) -> String? {
         guard isBatchWorking, batchWorkingBookID == id else { return nil }
         return batchProgressText
+    }
+
+
+    @ViewBuilder
+    private var localBooksSectionContent: some View {
+        if library.books.isEmpty {
+            Text("尚未导入书籍")
+                .font(AppTypography.body())
+                .foregroundStyle(theme.muted)
+                .listRowBackground(Color.clear)
+        } else {
+            LazyVGrid(
+                columns: [
+                    GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 14, alignment: .top)
+                ],
+                spacing: 16
+            ) {
+                ForEach(library.books) { book in
+                    bookGridLink(book)
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    @ViewBuilder
+    private func bookGridLink(_ book: Book) -> some View {
+        let isWorking = batchWorkingBookID == book.id
+        NavigationLink(value: book.id) {
+            BookGridCell(
+                book: book,
+                batchProgress: batchProgress(for: book.id),
+                batchText: batchText(for: book.id),
+                onCancelBatch: isWorking ? cancelBatch : nil
+            )
+        }
+        .buttonStyle(.plain)
+        .contextMenu { bookContextMenu(book) }
     }
 
     private func cancelBatch() {
@@ -549,5 +561,44 @@ private struct BookGridCell: View {
         }
         .frame(width: coverWidth, height: coverHeight)
         .clipped()
+    }
+}
+
+/// 使用 UIDocumentPicker，类型放宽到 item/data/zip/epub，避免 .epub 在文件 App 中不可选
+struct EPUBDocumentPicker: UIViewControllerRepresentable {
+    var onPick: (URL?) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        var types: [UTType] = [.item, .data, .content]
+        if let epub = UTType(filenameExtension: "epub") {
+            types.insert(epub, at: 0)
+        }
+        if let zip = UTType(filenameExtension: "zip") {
+            types.insert(zip, at: 0)
+        }
+        if let idpf = UTType("org.idpf.epub-container") {
+            types.insert(idpf, at: 0)
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL?) -> Void
+        init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onPick(urls.first)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onPick(nil)
+        }
     }
 }

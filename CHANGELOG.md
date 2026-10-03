@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3-120] — feature/epub-opds
+
+相对：`v1.3-119`
+
+### Fixed
+- 书架网格改动后误删 `EPUBDocumentPicker` 导致编译失败；拆分网格子视图减轻类型检查超时
+
 ## [1.3-119] — feature/epub-opds
 
 相对：`v1.3-118`
