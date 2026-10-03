@@ -2166,8 +2166,7 @@ class AppStore: AIService.Runtime {
             var inFlight = 0
 
             func spawnAvailable() {
-                while inFlight < limit && nextIndex < snapshot.count {
-                    if session != refreshSessionID { return }
+                while !cancelled && inFlight < limit && nextIndex < snapshot.count {
                     let feed = snapshot[nextIndex]
                     nextIndex += 1
                     inFlight += 1
@@ -4132,35 +4131,34 @@ class AppStore: AIService.Runtime {
             }
         }
 
-        let concurrency = 2
-        var done = 0
+        // 并发 2：两路交错推进，避免 TaskGroup 闭包与 MainActor 隔离冲突
         let total = candidates.count
+        var nextIndex = 0
+        var done = 0
+
         await withTaskGroup(of: Void.self) { group in
-            var next = 0
-            var inFlight = 0
-            func addWork() {
-                while inFlight < concurrency && next < total {
-                    if session != wifiPrefetchSession { return }
-                    if !NetworkReachability.shared.isPrefetchAllowed { return }
-                    let article = candidates[next]
-                    next += 1
-                    inFlight += 1
-                    group.addTask { @MainActor in
-                        await self.prefetchOneArticle(article)
+            let workers = min(2, total)
+            for _ in 0..<workers {
+                group.addTask { @MainActor in
+                    while true {
+                        guard session == self.wifiPrefetchSession else { return }
+                        guard NetworkReachability.shared.isPrefetchAllowed else { return }
+                        let idx: Int = {
+                            let i = nextIndex
+                            if i >= total { return -1 }
+                            nextIndex = i + 1
+                            return i
+                        }()
+                        guard idx >= 0 else { return }
+                        await self.prefetchOneArticle(candidates[idx])
+                        done += 1
+                        if session == self.wifiPrefetchSession {
+                            self.wifiPrefetchProgressText = "预缓存 \(done)/\(total)"
+                        }
                     }
                 }
             }
-            addWork()
-            for await _ in group {
-                inFlight = max(0, inFlight - 1)
-                done += 1
-                if session == wifiPrefetchSession {
-                    wifiPrefetchProgressText = "预缓存 \(done)/\(total)"
-                }
-                if session != wifiPrefetchSession { group.cancelAll(); break }
-                if !NetworkReachability.shared.isPrefetchAllowed { group.cancelAll(); break }
-                addWork()
-            }
+            await group.waitForAll()
         }
     }
 

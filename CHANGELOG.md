@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3-122] — feature/epub-opds
+
+相对：`v1.3-121`
+
+### Fixed
+- 预缓存 / 刷新 TaskGroup 与 MainActor 隔离冲突导致编译失败
+
 ## [1.3-121] — feature/epub-opds
 
 相对：`v1.3-120`
