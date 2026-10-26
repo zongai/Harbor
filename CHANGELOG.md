@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3-125] - 2026-10-26
+
+### CI
+- Artifact 配额满时不中断构建；IPA 仍通过 GitHub Release 上传
+
+### Included from 1.3-124
+- 列表/阅读翻译 UI 节流与更顺切换
+
 ## [1.3-124] - 2026-10-26
 
 ### Fixed / Performance
