@@ -2,7 +2,6 @@
   "apps": [
     {
       "file": "Harbor-1.3-125-build212.ipa",
-      "downloadURL": "https://github.com/zongai/Harbor/releases/download/v1.3-125-build212/Harbor-1.3-125-build212.ipa",
       "bundleIdentifier": "com.example.Harbor",
       "name": "Harbor",
       "developerName": "zongai",
