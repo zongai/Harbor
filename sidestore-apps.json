@@ -7,7 +7,7 @@
       "developerName": "My Developer",
       "subtitle": "Native RSS Reader client",
       "localizedDescription": "Harbor",
-      "iconURL": "https://example.com/plex-icon.png",
+      "iconURL": "https://github.com/zongai/Harbor/blob/feature/epub-opds/Harbor/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png?raw=true",
       "tintColor": "3478F6",
       "version": "1.3.0",
       "versionDate": "2026-10-26",
