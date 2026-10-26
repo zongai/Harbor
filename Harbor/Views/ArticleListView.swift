@@ -386,8 +386,12 @@ struct ArticleListView: View {
         translationTotal = articleTotal
         store.chrome.listTranslationProgressText = "0/\(articleTotal)"
 
-        // 整表一次交给底层并发池，避免「小批串行等待」把并发抵消掉
-        // 仍按 batch 切片只为分段刷新进度与列表；批次间不落盘，结束统一 save
+        // 整表一次交给底层并发池；进度文案与列表写入做节流，减轻翻译时滚动卡顿
+        let progressStride = max(2, articleTotal / 12)
+        var lastProgressShown = 0
+        var pendingUpdates: [(id: UUID, title: String?, summary: String?)] = []
+        pendingUpdates.reserveCapacity(translationBatchSize)
+
         for batch in jobs.chunked(into: translationBatchSize) {
             guard store.isListTranslationSessionActive(session) else {
                 isTranslatingAll = false
@@ -397,15 +401,22 @@ struct ArticleListView: View {
                 return
             }
             let results = await store.translateTexts(batch.map(\.text))
-            var updates: [(id: UUID, title: String?, summary: String?)] = []
-            updates.reserveCapacity(batch.count)
             for (job, result) in zip(batch, results) {
                 if let left = remainingJobsByArticle[job.articleID] {
                     let next = left - 1
                     if next <= 0 {
                         remainingJobsByArticle.removeValue(forKey: job.articleID)
                         translationDone += 1
-                        store.chrome.listTranslationProgressText = "\(translationDone)/\(translationTotal)"
+                        // 进度条文案节流：避免每篇都触发列表观察刷新
+                        if translationDone - lastProgressShown >= progressStride
+                            || translationDone >= translationTotal {
+                            lastProgressShown = translationDone
+                            var tx = Transaction()
+                            tx.disablesAnimations = true
+                            withTransaction(tx) {
+                                store.chrome.listTranslationProgressText = "\(translationDone)/\(translationTotal)"
+                            }
+                        }
                     } else {
                         remainingJobsByArticle[job.articleID] = next
                     }
@@ -413,13 +424,22 @@ struct ArticleListView: View {
                 guard let result, !result.isEmpty else { continue }
                 switch job.field {
                 case .title:
-                    updates.append((job.articleID, result, nil))
+                    pendingUpdates.append((job.articleID, result, nil))
                 case .summary:
-                    updates.append((job.articleID, nil, result))
+                    pendingUpdates.append((job.articleID, nil, result))
                 }
             }
-            if !updates.isEmpty {
-                store.applyListTranslations(updates, persist: false)
+            // 每批合并写入一次；禁止隐式动画
+            if !pendingUpdates.isEmpty {
+                let chunk = pendingUpdates
+                pendingUpdates.removeAll(keepingCapacity: true)
+                var tx = Transaction()
+                tx.disablesAnimations = true
+                withTransaction(tx) {
+                    store.applyListTranslations(chunk, persist: false)
+                }
+                // 让出主线程一帧，滚动手势有机会处理
+                await Task.yield()
             }
         }
         store.saveToStorage()

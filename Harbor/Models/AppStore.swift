@@ -3518,8 +3518,11 @@ class AppStore: AIService.Runtime {
                 group.addTask { (index, try await self.translateText(chunk, excluding: excluding)) }
             }
             var ordered = Array(repeating: "", count: chunks.count)
+            var finished = 0
             for try await (index, result) in group {
                 ordered[index] = result
+                finished += 1
+                if finished % 2 == 0 { await Task.yield() }
                 if next < chunks.count {
                     let i = next
                     let chunk = chunks[i]

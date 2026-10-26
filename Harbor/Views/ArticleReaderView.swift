@@ -818,17 +818,26 @@ struct ArticleReaderView: View {
             let restored = HTMLUtils.restoreMediaAfterTranslation(
                 result, images: media.images, tables: media.tables
             )
-            translatedContent = Self.wrapTranslatedHTML(restored)
+            let wrapped = Self.wrapTranslatedHTML(restored)
             let translatedTitle = await titleTask.value
+            await Task.yield()
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                translatedContent = wrapped
+                showTranslated = true
+                translationProgress = nil
+            }
             var updated = currentArticle
-            updated.translatedContent = translatedContent
+            updated.translatedContent = wrapped
             updated.translationEngineName = store.lastUsedTranslationEngine?.rawValue
             if let translatedTitle, !translatedTitle.isEmpty {
                 updated.translatedTitle = translatedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            store.updateArticle(updated)
-            showTranslated = true
-            translationProgress = nil
+            Task { @MainActor in
+                await Task.yield()
+                store.updateArticle(updated)
+            }
         } catch {
             translationError = error.localizedDescription
             translationProgress = nil
@@ -914,17 +923,26 @@ struct ArticleReaderView: View {
             let restored = HTMLUtils.restoreMediaAfterTranslation(
                 result, images: media.images, tables: media.tables
             )
-            translatedContent = Self.wrapTranslatedHTML(restored)
+            let wrapped = Self.wrapTranslatedHTML(restored)
             let translatedTitle = await titleTask.value
+            await Task.yield()
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                translatedContent = wrapped
+                showTranslated = true
+                translationProgress = nil
+            }
             var updated = currentArticle
-            updated.translatedContent = translatedContent
+            updated.translatedContent = wrapped
             updated.translationEngineName = "AI 审校"
             if let translatedTitle, !translatedTitle.isEmpty {
                 updated.translatedTitle = translatedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            store.updateArticle(updated)
-            showTranslated = true
-            translationProgress = nil
+            Task { @MainActor in
+                await Task.yield()
+                store.updateArticle(updated)
+            }
         } catch {
             translationError = error.localizedDescription
             translationProgress = nil
@@ -970,18 +988,27 @@ struct ArticleReaderView: View {
             let restored = HTMLUtils.restoreMediaAfterTranslation(
                 result, images: media.images, tables: media.tables
             )
-            translatedContent = Self.wrapTranslatedHTML(restored)
+            let wrapped = Self.wrapTranslatedHTML(restored)
             let translatedTitle = await titleTask.value
             let usedEngine = store.lastUsedTranslationEngine?.rawValue
+            await Task.yield()
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) {
+                translatedContent = wrapped
+                showTranslated = true
+                translationProgress = nil
+            }
             var updated = currentArticle
-            updated.translatedContent = translatedContent
+            updated.translatedContent = wrapped
             updated.translationEngineName = usedEngine
             if let translatedTitle, !translatedTitle.isEmpty {
                 updated.translatedTitle = translatedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            store.updateArticle(updated)
-            showTranslated = true
-            translationProgress = nil
+            Task { @MainActor in
+                await Task.yield()
+                store.updateArticle(updated)
+            }
         } catch {
             translationError = error.localizedDescription
             translationProgress = nil
