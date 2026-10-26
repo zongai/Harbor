@@ -105,7 +105,9 @@ jobs:
           zip -r "${{ steps.ver.outputs.ipa_name }}" Payload
           ls -lh "${{ steps.ver.outputs.ipa_name }}"
 
+      # Artifact 存储有配额；满时允许失败，仍通过下方 Release 上传 IPA
       - name: Upload IPA artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.ver.outputs.artifact_name }}
