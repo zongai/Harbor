@@ -7,7 +7,7 @@
       "developerName": "My Developer",
       "subtitle": "Native RSS Reader client",
       "localizedDescription": "Harbor",
-      "iconURL": "https://raw.githubusercontent.com/zongai/Harbor/refs/heads/feature/epub-opds/Harbor/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png?token=GHSAT0AAAAAADNR7T3R3RKCY4Q4SIXHGMII2W67VDA",
+      "iconURL": "https://raw.githubusercontent.com/zongai/Harbor/refs/heads/feature/epub-opds/Harbor/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
       "tintColor": "3478F6",
       "version": "1.3.0",
       "versionDate": "2026-10-26",
