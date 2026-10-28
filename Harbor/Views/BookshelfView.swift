@@ -218,10 +218,10 @@ struct BookshelfView: View {
         } else {
             LazyVGrid(
                 columns: [
-                    GridItem(.adaptive(minimum: 108, maximum: 120), spacing: 16, alignment: .top)
+                    GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 14, alignment: .top)
                 ],
                 alignment: .leading,
-                spacing: 18
+                spacing: 16
             ) {
                 ForEach(library.books) { book in
                     bookGridLink(book)
@@ -501,11 +501,11 @@ private struct BookGridCell: View {
     /// 最近阅读横滑用较小封面
     var compact: Bool = false
 
-    private var coverWidth: CGFloat { compact ? 72 : 108 }
-    private var coverHeight: CGFloat { compact ? 100 : 150 }
-    /// 固定标题区高度，保证网格行底对齐
-    private var titleBlockHeight: CGFloat { compact ? 32 : 36 }
-    private var metaBlockHeight: CGFloat { compact ? 0 : 32 }
+    private var coverWidth: CGFloat { compact ? 80 : 150 }
+    /// 海报比例约 2:3
+    private var coverHeight: CGFloat { compact ? 112 : 225 }
+    private var titleBlockHeight: CGFloat { compact ? 32 : 40 }
+    private var metaBlockHeight: CGFloat { compact ? 0 : 28 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -535,7 +535,8 @@ private struct BookGridCell: View {
                 }
             }
             .frame(width: coverWidth, height: coverHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+            .shadow(color: .black.opacity(compact ? 0.08 : 0.14), radius: compact ? 3 : 6, y: compact ? 2 : 3)
             .overlay(alignment: .topTrailing) {
                 if let onCancelBatch, batchProgress != nil {
                     Button(action: onCancelBatch) {
@@ -583,9 +584,24 @@ private struct BookGridCell: View {
                     .scaledToFill()
             } else {
                 ZStack {
-                    theme.card
-                    Image(systemName: "book.closed")
-                        .foregroundStyle(theme.muted)
+                    LinearGradient(
+                        colors: [theme.card, theme.card.opacity(0.65)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    VStack(spacing: 6) {
+                        Image(systemName: "book.closed.fill")
+                            .font(.system(size: compact ? 22 : 32))
+                            .foregroundStyle(theme.muted)
+                        if !compact {
+                            Text(book.title)
+                                .font(AppTypography.caption())
+                                .foregroundStyle(theme.muted)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(3)
+                                .padding(.horizontal, 8)
+                        }
+                    }
                 }
             }
         }

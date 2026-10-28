@@ -1,6 +1,7 @@
 import SwiftUI
+import UIKit
 
-/// OPDS 书库浏览与 EPUB 下载入架
+/// OPDS 书库浏览：瀑布流海报封面
 struct OPDSBrowserView: View {
     @Environment(BookLibrary.self) private var library
     @Environment(\.theme) private var theme
@@ -10,23 +11,27 @@ struct OPDSBrowserView: View {
     var username: String? = nil
     var password: String? = nil
 
-    @State private var path: [String] = []
     @State private var feed: OPDSFeed?
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var downloadProgress: Double?
+    @State private var path: [String] = []
     @State private var downloadingID: String?
+    @State private var downloadProgress: Double = 0
     @State private var statusMessage: String?
     @State private var downloadTask: Task<Void, Never>?
 
-    private var currentURL: String {
-        path.last ?? rootURL
+    private var navigationEntries: [OPDSEntry] {
+        (feed?.entries ?? []).filter(\.isNavigation)
+    }
+
+    private var publicationEntries: [OPDSEntry] {
+        (feed?.entries ?? []).filter { !$0.isNavigation }
     }
 
     var body: some View {
         Group {
             if isLoading && feed == nil {
-                ProgressView("加载书库…")
+                ProgressView("加载中…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let errorMessage, feed == nil {
                 ContentUnavailableView {
@@ -34,91 +39,103 @@ struct OPDSBrowserView: View {
                 } description: {
                     Text(errorMessage)
                 } actions: {
-                    Button("重试") { Task { await load(url: currentURL) } }
+                    Button("重试") {
+                        Task { await load(url: rootURL) }
+                    }
                 }
             } else {
-                List {
-                    if let statusMessage {
-                        Text(statusMessage)
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted)
-                            .listRowBackground(Color.clear)
-                    }
-                    if let downloadProgress {
-                        ProgressView(value: downloadProgress)
-                            .listRowBackground(Color.clear)
-                    }
-                    ForEach(feed?.entries ?? []) { entry in
-                        entryRow(entry)
-                    }
-                    if let next = feed?.nextURL {
-                        Button("加载更多") {
-                            Task { await load(url: next, append: true) }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: AppSpacing.md) {
+                        if let statusMessage {
+                            Text(statusMessage)
+                                .font(AppTypography.caption())
+                                .foregroundStyle(theme.muted)
+                                .padding(.horizontal, AppSpacing.md)
+                        }
+
+                        if downloadingID != nil {
+                            ProgressView(value: downloadProgress)
+                                .padding(.horizontal, AppSpacing.md)
+                        }
+
+                        if !navigationEntries.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(navigationEntries) { entry in
+                                        if let nav = entry.navigationURL {
+                                            NavigationLink {
+                                                OPDSBrowserView(
+                                                    rootTitle: entry.title,
+                                                    rootURL: nav,
+                                                    username: username,
+                                                    password: password
+                                                )
+                                            } label: {
+                                                Text(entry.title)
+                                                    .font(AppTypography.caption())
+                                                    .foregroundStyle(theme.text)
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 8)
+                                                    .background(theme.card, in: Capsule())
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, AppSpacing.md)
+                            }
+                        }
+
+                        if publicationEntries.isEmpty && navigationEntries.isEmpty && feed != nil {
+                            Text("此目录暂无条目")
+                                .font(AppTypography.body())
+                                .foregroundStyle(theme.muted)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 40)
+                        } else if !publicationEntries.isEmpty {
+                            WaterfallGrid(items: publicationEntries, columns: 2, spacing: 12) { entry in
+                                OPDSPosterCard(
+                                    entry: entry,
+                                    username: username,
+                                    password: password,
+                                    isDownloading: downloadingID == entry.id,
+                                    downloadProgress: downloadingID == entry.id ? downloadProgress : nil,
+                                    onDownload: { startDownload(entry) }
+                                )
+                            }
+                            .padding(.horizontal, AppSpacing.md)
+                        }
+
+                        if let next = feed?.nextURL {
+                            Button {
+                                Task { await load(url: next, append: true) }
+                            } label: {
+                                if isLoading {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity)
+                                        .padding()
+                                } else {
+                                    Text("加载更多")
+                                        .font(AppTypography.body())
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .padding(.horizontal, AppSpacing.md)
+                            .padding(.bottom, AppSpacing.lg)
+                            .disabled(isLoading)
                         }
                     }
+                    .padding(.vertical, AppSpacing.sm)
                 }
-                .listStyle(.plain)
             }
         }
         .appScreenBackground()
         .navigationTitle(feed?.title ?? rootTitle)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load(url: rootURL) }
-        .onDisappear {
-            downloadTask?.cancel()
-        }
-    }
-
-    @ViewBuilder
-    private func entryRow(_ entry: OPDSEntry) -> some View {
-        if entry.isNavigation, let nav = entry.navigationURL {
-            NavigationLink(entry.title) {
-                OPDSBrowserView(
-                    rootTitle: entry.title,
-                    rootURL: nav,
-                    username: username,
-                    password: password
-                )
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(entry.title)
-                    .font(AppTypography.listTitle())
-                    .foregroundStyle(theme.text)
-                if !entry.authors.isEmpty {
-                    Text(entry.authors.joined(separator: " · "))
-                        .font(AppTypography.caption())
-                        .foregroundStyle(theme.muted)
-                }
-                if let summary = entry.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(AppTypography.caption())
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(3)
-                }
-                HStack {
-                    if entry.preferredEPUBURL != nil {
-                        Button {
-                            startDownload(entry)
-                        } label: {
-                            if downloadingID == entry.id {
-                                Label("下载中…", systemImage: "arrow.down.circle")
-                            } else {
-                                Label("下载 EPUB", systemImage: "arrow.down.circle")
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(downloadingID != nil)
-                    }
-                    if let lang = entry.language {
-                        Text(lang)
-                            .font(AppTypography.caption())
-                            .foregroundStyle(theme.muted)
-                    }
-                }
-            }
-            .padding(.vertical, 4)
-        }
+        .onDisappear { downloadTask?.cancel() }
     }
 
     private func load(url: String, append: Bool = false) async {
@@ -153,7 +170,6 @@ struct OPDSBrowserView: View {
             statusMessage = OPDSError.noEPUB.localizedDescription
             return
         }
-        // 避免重复：同名已在书架
         if library.books.contains(where: { $0.title == entry.title }) {
             statusMessage = "书架中可能已有「\(entry.title)」，继续将再导入一本"
         }
@@ -184,12 +200,191 @@ struct OPDSBrowserView: View {
                 statusMessage = error.localizedDescription
             }
             downloadingID = nil
-            downloadProgress = nil
+            downloadProgress = 0
         }
     }
 }
 
-/// 添加 OPDS 书库
+// MARK: - Waterfall
+
+private struct WaterfallGrid<Item: Identifiable, Content: View>: View {
+    let items: [Item]
+    let columns: Int
+    let spacing: CGFloat
+    @ViewBuilder let content: (Item) -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: spacing) {
+            ForEach(0..<columns, id: \.self) { col in
+                LazyVStack(spacing: spacing) {
+                    ForEach(itemsForColumn(col)) { item in
+                        content(item)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    private func itemsForColumn(_ col: Int) -> [Item] {
+        items.enumerated().compactMap { $0.offset % columns == col ? $0.element : nil }
+    }
+}
+
+// MARK: - Poster card
+
+private struct OPDSPosterCard: View {
+    @Environment(\.theme) private var theme
+    let entry: OPDSEntry
+    var username: String?
+    var password: String?
+    var isDownloading: Bool
+    var downloadProgress: Double?
+    var onDownload: () -> Void
+
+    var body: some View {
+        Button(action: onDownload) {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack(alignment: .bottom) {
+                    OPDSCoverImage(
+                        urlString: entry.coverURL,
+                        username: username,
+                        password: password
+                    )
+                    .aspectRatio(2 / 3, contentMode: .fill)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.75)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.title)
+                            .font(AppTypography.font(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        if !entry.authors.isEmpty {
+                            Text(entry.authors.joined(separator: " · "))
+                                .font(AppTypography.caption())
+                                .foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(1)
+                        }
+                        if isDownloading, let downloadProgress {
+                            ProgressView(value: min(1, max(0, downloadProgress)))
+                                .tint(.white)
+                                .scaleEffect(x: 1, y: 0.7, anchor: .center)
+                                .padding(.top, 2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: AppRadius.md, style: .continuous))
+                .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
+
+                if let summary = entry.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                }
+
+                if entry.preferredEPUBURL != nil {
+                    Label(isDownloading ? "下载中…" : "获取 EPUB", systemImage: "arrow.down.circle")
+                        .font(AppTypography.caption())
+                        .foregroundStyle(theme.accent)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isDownloading)
+        .accessibilityLabel(entry.title)
+        .accessibilityHint(entry.preferredEPUBURL != nil ? "下载并导入书架" : "无 EPUB")
+    }
+
+}
+
+/// 支持可选 Basic 认证的封面图
+private struct OPDSCoverImage: View {
+    @Environment(\.theme) private var theme
+    let urlString: String?
+    var username: String?
+    var password: String?
+
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if failed || urlString == nil {
+                ZStack {
+                    LinearGradient(
+                        colors: [theme.card, theme.card.opacity(0.7)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    VStack(spacing: 6) {
+                        Image(systemName: "book.closed.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(theme.muted)
+                        Text("暂无封面")
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.muted)
+                    }
+                }
+            } else {
+                ZStack {
+                    theme.card
+                    ProgressView()
+                }
+            }
+        }
+        .task(id: urlString) {
+            await load()
+        }
+    }
+
+    private func load() async {
+        guard let urlString, let url = URL(string: urlString) else {
+            failed = true
+            return
+        }
+        failed = false
+        image = nil
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        if let username, !username.isEmpty {
+            let userPass = "\(username):\(password ?? "")"
+            if let data = userPass.data(using: .utf8) {
+                request.setValue("Basic \(data.base64EncodedString())", forHTTPHeaderField: "Authorization")
+            }
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                failed = true
+                return
+            }
+            if let ui = UIImage(data: data) {
+                image = ui
+            } else {
+                failed = true
+            }
+        } catch {
+            failed = true
+        }
+    }
+}
+
 struct AddOPDSCatalogView: View {
     @Environment(OPDSCatalogStore.self) private var catalogs
     @Environment(\.dismiss) private var dismiss
