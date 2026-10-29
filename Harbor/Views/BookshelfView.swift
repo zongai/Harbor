@@ -218,10 +218,10 @@ struct BookshelfView: View {
         } else {
             LazyVGrid(
                 columns: [
-                    GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 14, alignment: .top)
+                    GridItem(.adaptive(minimum: 96, maximum: 112), spacing: 12, alignment: .top)
                 ],
                 alignment: .leading,
-                spacing: 16
+                spacing: 14
             ) {
                 ForEach(library.books) { book in
                     bookGridLink(book)
@@ -501,11 +501,11 @@ private struct BookGridCell: View {
     /// 最近阅读横滑用较小封面
     var compact: Bool = false
 
-    private var coverWidth: CGFloat { compact ? 80 : 150 }
-    /// 海报比例约 2:3
-    private var coverHeight: CGFloat { compact ? 112 : 225 }
-    private var titleBlockHeight: CGFloat { compact ? 32 : 40 }
-    private var metaBlockHeight: CGFloat { compact ? 0 : 28 }
+    private var coverWidth: CGFloat { compact ? 64 : 100 }
+    /// 海报比例约 2:3（缩小后更易一屏多本）
+    private var coverHeight: CGFloat { compact ? 90 : 150 }
+    private var titleBlockHeight: CGFloat { compact ? 28 : 34 }
+    private var metaBlockHeight: CGFloat { compact ? 0 : 26 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

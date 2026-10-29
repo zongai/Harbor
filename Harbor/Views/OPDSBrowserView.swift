@@ -19,13 +19,31 @@ struct OPDSBrowserView: View {
     @State private var downloadProgress: Double = 0
     @State private var statusMessage: String?
     @State private var downloadTask: Task<Void, Never>?
+    /// 默认只显示尚未加入本地书架的书（按标题粗匹配）
+    @State private var showOnlyNotInLibrary: Bool = true
 
     private var navigationEntries: [OPDSEntry] {
         (feed?.entries ?? []).filter(\.isNavigation)
     }
 
-    private var publicationEntries: [OPDSEntry] {
+    private var allPublications: [OPDSEntry] {
         (feed?.entries ?? []).filter { !$0.isNavigation }
+    }
+
+    private var libraryTitleKeys: Set<String> {
+        Set(library.books.map { Self.normalizeTitle($0.title) })
+    }
+
+    private var publicationEntries: [OPDSEntry] {
+        let all = allPublications
+        guard showOnlyNotInLibrary else { return all }
+        return all.filter { !libraryTitleKeys.contains(Self.normalizeTitle($0.title)) }
+    }
+
+    private static func normalizeTitle(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "\s+", with: " ", options: .regularExpression)
     }
 
     var body: some View {
@@ -86,20 +104,33 @@ struct OPDSBrowserView: View {
                             }
                         }
 
-                        if publicationEntries.isEmpty && navigationEntries.isEmpty && feed != nil {
+                        if allPublications.isEmpty && navigationEntries.isEmpty && feed != nil {
                             Text("此目录暂无条目")
                                 .font(AppTypography.body())
                                 .foregroundStyle(theme.muted)
                                 .frame(maxWidth: .infinity)
                                 .padding(.top, 40)
+                        } else if publicationEntries.isEmpty && !allPublications.isEmpty {
+                            VStack(spacing: 10) {
+                                Text(showOnlyNotInLibrary ? "没有未入库的书籍" : "暂无条目")
+                                    .font(AppTypography.body())
+                                    .foregroundStyle(theme.muted)
+                                if showOnlyNotInLibrary {
+                                    Button("显示全部书籍") { showOnlyNotInLibrary = false }
+                                        .font(AppTypography.caption())
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 40)
                         } else if !publicationEntries.isEmpty {
-                            WaterfallGrid(items: publicationEntries, columns: 2, spacing: 12) { entry in
+                            WaterfallGrid(items: publicationEntries, columns: 2, spacing: 10) { entry in
                                 OPDSPosterCard(
                                     entry: entry,
                                     username: username,
                                     password: password,
                                     isDownloading: downloadingID == entry.id,
                                     downloadProgress: downloadingID == entry.id ? downloadProgress : nil,
+                                    alreadyInLibrary: libraryTitleKeys.contains(Self.normalizeTitle(entry.title)),
                                     onDownload: { startDownload(entry) }
                                 )
                             }
@@ -134,6 +165,17 @@ struct OPDSBrowserView: View {
         .appScreenBackground()
         .navigationTitle(feed?.title ?? rootTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showOnlyNotInLibrary.toggle()
+                } label: {
+                    Text(showOnlyNotInLibrary ? "未入库" : "全部")
+                        .font(AppTypography.caption())
+                }
+                .accessibilityLabel(showOnlyNotInLibrary ? "当前仅显示未入库，点按显示全部" : "当前显示全部，点按仅未入库")
+            }
+        }
         .task { await load(url: rootURL) }
         .onDisappear { downloadTask?.cancel() }
     }
@@ -240,6 +282,7 @@ private struct OPDSPosterCard: View {
     var password: String?
     var isDownloading: Bool
     var downloadProgress: Double?
+    var alreadyInLibrary: Bool = false
     var onDownload: () -> Void
 
     var body: some View {
@@ -260,6 +303,17 @@ private struct OPDSPosterCard: View {
                         startPoint: .center,
                         endPoint: .bottom
                     )
+
+                    if alreadyInLibrary {
+                        Text("已入库")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.black.opacity(0.55), in: Capsule())
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            .padding(8)
+                    }
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(entry.title)
