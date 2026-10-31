@@ -1,0 +1,17 @@
+name: Cleanup Workflow Runs
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # 每周日定期清理
+  workflow_dispatch:      # 支持手动触发
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs
+        uses: ophub/delete-releases-workflows@main
+        with:
+          delete_workflows: true
+          workflows_keep_day: 7 # 保留最近 7 天的记录，其余删除
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
