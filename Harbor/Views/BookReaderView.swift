@@ -29,6 +29,10 @@ struct BookReaderView: View {
     @State private var pendingContinueTTS = false
     @State private var showTOC = false
     @State private var showChrome = true
+    @State private var showTypography = false
+    @State private var tocSearchText = ""
+    /// 点按正文区域切换 chrome；滚动时短暂显示
+    @State private var chromeHideTask: Task<Void, Never>?
     @State private var bookTTS = BookTTSController()
     @State private var ttsRate: Double = 1.0
     @State private var readingMode: BookReadingMode = .original
@@ -48,6 +52,8 @@ struct BookReaderView: View {
     @State private var didRestoreScroll = false
     @State private var restoreToken = 0
     @State private var restoreProgress: Double = 0
+    /// 滚动时用于节流自动显隐
+    @State private var lastScrollProgressForChrome: Double = -1
 
     private var chapters: [BookChapter] {
         book?.chapters.sorted(by: { $0.index < $1.index }) ?? []
@@ -82,6 +88,8 @@ struct BookReaderView: View {
         .onDisappear {
             persistPosition()
             bookTTS.stop()
+            chromeHideTask?.cancel()
+            chromeHideTask = nil
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
@@ -166,12 +174,23 @@ struct BookReaderView: View {
             }
         }
         .coordinateSpace(name: "bookReaderScroll")
+        // 分页：底层 UIScrollView 按视口高度 isPagingEnabled 吸附
+        .background {
+            BookVerticalPageScrollEnabler(
+                enabled: (BookLayoutMode(rawValue: store.settings.bookLayoutMode) ?? .scroll) == .page
+            )
+        }
         .onScrollGeometryChange(for: Double.self) { geo in
             let range = max(geo.contentSize.height - geo.containerSize.height, 1)
             return min(1, max(0, Double(geo.contentOffset.y / range)))
         } action: { _, newValue in
             if pendingScrollRestore == nil {
                 scrollProgress = newValue
+                // 滚动时短暂露出进度条（Readest 式沉浸：滚完再藏）
+                if abs(newValue - lastScrollProgressForChrome) > 0.008 {
+                    lastScrollProgressForChrome = newValue
+                    revealChromeTemporarily()
+                }
             }
         }
         .background {
@@ -217,10 +236,23 @@ struct BookReaderView: View {
                     }
                 }
         )
-        .navigationTitle(book.title)
+        // Readest 式沉浸：双击正文切换工具栏（单击留给选区 / 链接）
+        .onTapGesture(count: 2) {
+            toggleChrome()
+        }
+        .navigationTitle(showChrome ? book.title : "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(showChrome ? .visible : .hidden, for: .navigationBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    showTypography = true
+                } label: {
+                    Label("排版", systemImage: "textformat.size")
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("字体与排版")
+
                 Menu {
                     ForEach(BookReadingMode.allCases) { mode in
                         Button {
@@ -346,97 +378,380 @@ struct BookReaderView: View {
         .safeAreaInset(edge: .bottom) {
             if showChrome {
                 chapterChrome
-            }
-        }
-        .sheet(isPresented: $showTOC) {
-            NavigationStack {
-                List {
-                    ForEach(Array(chapters.enumerated()), id: \.element.id) { idx, ch in
-                        Button {
-                            selectChapter(idx)
-                            showTOC = false
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(ch.title)
-                                        .font(AppTypography.listTitle())
-                                        .foregroundStyle(theme.text)
-                                        .multilineTextAlignment(.leading)
-                                    Text("第 " + String(idx + 1) + " 章")
-                                        .font(AppTypography.caption())
-                                        .foregroundStyle(theme.muted)
-                                }
-                                Spacer()
-                                if idx == chapterIndex {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(theme.accent)
-                                }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                // 沉浸态：底部细进度条 + 点按可唤回（避免双击难发现）
+                Button {
+                    toggleChrome()
+                } label: {
+                    VStack(spacing: 0) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Rectangle().fill(theme.muted.opacity(0.15))
+                                Rectangle()
+                                    .fill(theme.accent.opacity(0.75))
+                                    .frame(width: max(2, geo.size.width * overallBookProgress))
                             }
                         }
+                        .frame(height: 2)
+                        .padding(.horizontal, 24)
+                        Text(progressCaption)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(theme.muted.opacity(0.9))
+                            .padding(.top, 4)
+                            .padding(.bottom, 6)
                     }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                 }
-                .navigationTitle("目录")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("完成") { showTOC = false }
-                    }
-                }
+                .buttonStyle(.plain)
+                .transition(.opacity)
             }
-            .presentationDetents([.medium, .large])
+        }
+        .animation(.easeInOut(duration: 0.22), value: showChrome)
+        .sheet(isPresented: $showTOC) {
+            tocSheet
+        }
+        .sheet(isPresented: $showTypography) {
+            typographySheet
         }
         } // ScrollViewReader
         .preferredColorScheme(readerStatusBarScheme)
         .onChange(of: chapterIndex) { _, _ in
             Task { await loadCurrentChapter() }
+            // 换章时短暂露出 chrome，便于确认位置
+            revealChromeTemporarily(durationMs: 2_400)
         }
     }
 
-    private var chapterChrome: some View {
-        HStack(spacing: 16) {
-            Button {
-                guard chapterIndex > 0 else { return }
-                selectChapter(chapterIndex - 1)
-            } label: {
-                Label("上一章", systemImage: "chevron.left")
-            }
-            .disabled(chapterIndex <= 0)
-            .labelStyle(.iconOnly)
+    // MARK: - Readest-style chrome helpers
 
-            VStack(spacing: 4) {
-                ProgressView(value: chapterProgress)
-                    .tint(theme.accent)
-                if let s = bookTTS.statusText, bookTTS.isPlaying || bookTTS.isLoading || bookTTS.isCaching {
-                    Text(s)
-                        .font(AppTypography.caption())
-                        .foregroundStyle(theme.accent)
-                        .lineLimit(1)
-                } else {
-                    Text(currentChapter?.title ?? "")
-                        .font(AppTypography.caption())
-                        .foregroundStyle(theme.muted)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            Button {
-                guard chapterIndex + 1 < chapters.count else { return }
-                selectChapter(chapterIndex + 1)
-            } label: {
-                Label("下一章", systemImage: "chevron.right")
-            }
-            .disabled(chapterIndex + 1 >= chapters.count)
-            .labelStyle(.iconOnly)
+    private func toggleChrome() {
+        chromeHideTask?.cancel()
+        chromeHideTask = nil
+        withAnimation(.easeInOut(duration: 0.22)) {
+            showChrome.toggle()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+    }
+
+    private func revealChromeTemporarily(durationMs: UInt64 = 1_800) {
+        chromeHideTask?.cancel()
+        if !showChrome {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                showChrome = true
+            }
+        }
+        chromeHideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: durationMs * 1_000_000)
+            guard !Task.isCancelled else { return }
+            // TTS / 翻译进行中保持显示
+            if bookTTS.isPlaying || bookTTS.isLoading || isTranslatingChapter { return }
+            withAnimation(.easeInOut(duration: 0.22)) {
+                showChrome = false
+            }
+        }
+    }
+
+    private var filteredChapters: [(offset: Int, element: BookChapter)] {
+        let list = Array(chapters.enumerated())
+        let q = tocSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return list }
+        return list.filter { $0.element.title.localizedCaseInsensitiveContains(q) }
+    }
+
+    /// 全书综合进度：已完成章 + 当前章滚动
+    private var overallBookProgress: Double {
+        let n = max(chapters.count, 1)
+        let chapterFrac = Double(chapterIndex) / Double(n)
+        let within = scrollProgress / Double(n)
+        return min(1, max(0, chapterFrac + within))
     }
 
     private var chapterProgress: Double {
         let n = max(chapters.count, 1)
         return Double(chapterIndex + 1) / Double(n)
+    }
+
+    private var progressCaption: String {
+        let chapterPct = Int((scrollProgress * 100).rounded())
+        let bookPct = Int((overallBookProgress * 100).rounded())
+        return "章内 \(chapterPct)% · 全书 \(bookPct)%"
+    }
+
+    private var chapterChrome: some View {
+        VStack(spacing: 6) {
+            // 全书进度细条
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(theme.muted.opacity(0.22))
+                    Capsule()
+                        .fill(theme.accent.opacity(0.85))
+                        .frame(width: max(4, geo.size.width * overallBookProgress))
+                }
+            }
+            .frame(height: 3)
+            .padding(.horizontal, 20)
+
+            HStack(spacing: 12) {
+                Button {
+                    guard chapterIndex > 0 else { return }
+                    selectChapter(chapterIndex - 1)
+                } label: {
+                    Label("上一章", systemImage: "chevron.left")
+                }
+                .disabled(chapterIndex <= 0)
+                .labelStyle(.iconOnly)
+
+                VStack(spacing: 3) {
+                    if let s = bookTTS.statusText, bookTTS.isPlaying || bookTTS.isLoading || bookTTS.isCaching {
+                        Text(s)
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.accent)
+                            .lineLimit(1)
+                    } else {
+                        Text(currentChapter?.title ?? "")
+                            .font(AppTypography.caption())
+                            .foregroundStyle(theme.text)
+                            .lineLimit(1)
+                    }
+                    Text("\(chapterIndex + 1)/\(max(chapters.count, 1))  ·  \(progressCaption)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    toggleChrome()
+                }
+
+                Button {
+                    guard chapterIndex + 1 < chapters.count else { return }
+                    selectChapter(chapterIndex + 1)
+                } label: {
+                    Label("下一章", systemImage: "chevron.right")
+                }
+                .disabled(chapterIndex + 1 >= chapters.count)
+                .labelStyle(.iconOnly)
+
+                Button {
+                    toggleChrome()
+                } label: {
+                    Label("收起", systemImage: "chevron.down")
+                }
+                .labelStyle(.iconOnly)
+                .accessibilityLabel("隐藏工具栏")
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+        .padding(.top, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private var tocSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(filteredChapters, id: \.element.id) { item in
+                    let idx = item.offset
+                    let ch = item.element
+                    Button {
+                        selectChapter(idx)
+                        showTOC = false
+                        tocSearchText = ""
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("\(idx + 1)")
+                                .font(AppTypography.caption())
+                                .foregroundStyle(theme.muted)
+                                .frame(width: 28, alignment: .trailing)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(ch.title)
+                                    .font(AppTypography.listTitle())
+                                    .foregroundStyle(idx == chapterIndex ? theme.accent : theme.text)
+                                    .multilineTextAlignment(.leading)
+                                if idx == chapterIndex {
+                                    Text("当前位置 · 章内 \(Int((scrollProgress * 100).rounded()))%")
+                                        .font(AppTypography.caption())
+                                        .foregroundStyle(theme.accent)
+                                } else if ch.readingProgress > 0.02 {
+                                    Text("已读 \(Int((ch.readingProgress * 100).rounded()))%")
+                                        .font(AppTypography.caption())
+                                        .foregroundStyle(theme.muted)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            if idx == chapterIndex {
+                                Image(systemName: "location.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(theme.accent)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .searchable(text: $tocSearchText, prompt: "搜索章节标题")
+            .navigationTitle("目录")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") {
+                        showTOC = false
+                        tocSearchText = ""
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var typographySheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("翻页方式", selection: Binding(
+                        get: { BookLayoutMode(rawValue: store.settings.bookLayoutMode) ?? .scroll },
+                        set: { store.settings.bookLayoutMode = $0.rawValue }
+                    )) {
+                        ForEach(BookLayoutMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("版式")
+                } footer: {
+                    Text(BookLayoutMode(rawValue: store.settings.bookLayoutMode) == .page
+                         ? "分页：按屏幕高度吸附翻页；左右滑仍可换章。"
+                         : "连续滚动：上下自由滑动。")
+                }
+
+                Section {
+                    HStack {
+                        Text("正文字号")
+                        Spacer()
+                        Text("\(Int(store.fontSize))")
+                            .foregroundStyle(theme.muted)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { store.fontSize },
+                            set: { store.fontSize = $0 }
+                        ),
+                        in: 14...28,
+                        step: 1
+                    )
+                    .tint(theme.accent)
+
+                    HStack {
+                        Text("标题字号")
+                        Spacer()
+                        Text("\(Int(store.readerTitleFontSize))")
+                            .foregroundStyle(theme.muted)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { store.readerTitleFontSize },
+                            set: { store.readerTitleFontSize = $0 }
+                        ),
+                        in: 18...36,
+                        step: 1
+                    )
+                    .tint(theme.accent)
+                } header: {
+                    Text("字体")
+                }
+
+                Section {
+                    HStack {
+                        Text("行高")
+                        Spacer()
+                        Text(String(format: "%.2f", store.settings.readerLineHeight))
+                            .foregroundStyle(theme.muted)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { store.settings.readerLineHeight },
+                            set: { store.settings.readerLineHeight = min(2.5, max(1.15, $0)) }
+                        ),
+                        in: 1.15...2.5,
+                        step: 0.05
+                    )
+                    .tint(theme.accent)
+
+                    HStack {
+                        Text("段间距")
+                        Spacer()
+                        Text(String(format: "%.2f", store.settings.readerParagraphSpacing))
+                            .foregroundStyle(theme.muted)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { store.settings.readerParagraphSpacing },
+                            set: { store.settings.readerParagraphSpacing = min(1.8, max(0.15, $0)) }
+                        ),
+                        in: 0.15...1.8,
+                        step: 0.05
+                    )
+                    .tint(theme.accent)
+
+                    HStack {
+                        Text("首行缩进")
+                        Spacer()
+                        Text(store.settings.readerFirstLineIndentEm < 0.05
+                             ? "关"
+                             : String(format: "%.1f em", store.settings.readerFirstLineIndentEm))
+                            .foregroundStyle(theme.muted)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { store.settings.readerFirstLineIndentEm },
+                            set: { store.settings.readerFirstLineIndentEm = min(3.0, max(0, $0)) }
+                        ),
+                        in: 0...3.0,
+                        step: 0.5
+                    )
+                    .tint(theme.accent)
+                } header: {
+                    Text("段落")
+                } footer: {
+                    Text("行高、段距与首行缩进同时作用于文章与书籍正文。中文正文默认建议 2 em 缩进；设为 0 可关闭。")
+                }
+
+                Section {
+                    Picker("阅读模式", selection: $readingMode) {
+                        ForEach(BookReadingMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .disabled(readingMode != .original && cachedHTMLTranslation.isEmpty && chapterTranslation?.status != .done)
+                } header: {
+                    Text("显示")
+                } footer: {
+                    Text("双击正文可显隐工具栏。")
+                }
+            }
+            .navigationTitle("排版")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        store.persistSettings()
+                        showTypography = false
+                    }
+                }
+            }
+            .appFormChrome()
+        }
+        .presentationDetents([.medium, .large])
     }
 
 
@@ -853,6 +1168,52 @@ private struct BookScrollOffsetRestorer: UIViewRepresentable {
     private static func findScrollViewDFS(_ root: UIView?) -> UIScrollView? {
         guard let root else { return nil }
         if let s = root as? UIScrollView, s.contentSize.height > s.bounds.height + 10 {
+            return s
+        }
+        for child in root.subviews {
+            if let found = findScrollViewDFS(child) { return found }
+        }
+        return nil
+    }
+}
+
+/// 为 SwiftUI ScrollView 底层 UIScrollView 开启垂直分页吸附（按视口高度）
+private struct BookVerticalPageScrollEnabler: UIViewRepresentable {
+    var enabled: Bool
+
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView(frame: .zero)
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // 等布局完成后再找 UIScrollView
+        DispatchQueue.main.async {
+            guard let scroll = Self.findScrollView(from: uiView) else { return }
+            if scroll.isPagingEnabled != enabled {
+                scroll.isPagingEnabled = enabled
+            }
+            // 分页时用较快减速，手感更接近「翻页」
+            scroll.decelerationRate = enabled ? .fast : .normal
+        }
+    }
+
+    private static func findScrollView(from view: UIView) -> UIScrollView? {
+        var v: UIView? = view
+        while let cur = v {
+            if let s = cur as? UIScrollView { return s }
+            v = cur.superview
+        }
+        var root: UIView? = view
+        while let s = root?.superview { root = s }
+        return findScrollViewDFS(root)
+    }
+
+    private static func findScrollViewDFS(_ root: UIView?) -> UIScrollView? {
+        guard let root else { return nil }
+        if let s = root as? UIScrollView, s.bounds.height > 40 {
             return s
         }
         for child in root.subviews {

@@ -14,6 +14,12 @@ struct SelectableParagraphView: UIViewRepresentable {
     let fontSize: Double
     var typography: ReaderTypography = .latin
     var role: ParagraphRole = .body
+    /// 行高倍数（1.15…2.5）
+    var lineHeight: Double = 1.55
+    /// 段间距相对字号倍数
+    var paragraphSpacing: Double = 0.55
+    /// 首行缩进 em（0=关闭；中文 body 默认会用）
+    var firstLineIndentEm: Double = 2.0
     var onOpenURL: (URL) -> Void
     var onExplain: (String) -> Void
     var onHighlight: ((String) -> Void)? = nil
@@ -86,7 +92,10 @@ struct SelectableParagraphView: UIViewRepresentable {
         let head = String(sample.prefix(24))
         let tail = len > 48 ? String(sample.suffix(16)) : ""
         let cat = UIApplication.shared.preferredContentSizeCategory.rawValue
-        return "\(typography)-\(role)-\(Int(fontSize))-\(cat)-\(len)-\(head)-\(tail)"
+        let lh = String(format: "%.2f", lineHeight)
+        let ps = String(format: "%.2f", paragraphSpacing)
+        let ind = String(format: "%.1f", firstLineIndentEm)
+        return "\(typography)-\(role)-\(Int(fontSize))-\(lh)-\(ps)-\(ind)-\(cat)-\(len)-\(head)-\(tail)"
     }
 
     private func apply(to tv: UITextView, coordinator: Coordinator, mark: String? = nil) {
@@ -109,30 +118,31 @@ struct SelectableParagraphView: UIViewRepresentable {
         let font = UIFont.systemFont(ofSize: scaledSize, weight: weight)
         let para = NSMutableParagraphStyle()
         para.alignment = .natural
-        // Editorial reading metrics by role (use scaled size)
+        para.lineBreakMode = .byWordWrapping
+        // 用户可调行高（lineHeightMultiple）；段距/首行缩进按角色与语言微调
+        let lh = min(2.5, max(1.15, lineHeight))
+        let gapMul = min(1.8, max(0.15, paragraphSpacing))
         switch role {
         case .heading:
             para.firstLineHeadIndent = 0
-            para.lineSpacing = max(2, scaledSize * 0.18)
-            para.paragraphSpacing = max(4, scaledSize * 0.15)
-            para.lineBreakMode = .byWordWrapping
+            para.lineHeightMultiple = max(1.15, lh * 0.92)
+            para.paragraphSpacing = max(4, scaledSize * gapMul * 0.35)
         case .quote:
             para.firstLineHeadIndent = 0
-            para.lineSpacing = max(3, scaledSize * 0.32)
-            para.paragraphSpacing = max(4, scaledSize * 0.2)
-            para.lineBreakMode = .byWordWrapping
+            para.lineHeightMultiple = lh
+            para.paragraphSpacing = max(4, scaledSize * gapMul * 0.45)
         case .body:
             switch typography {
             case .chinese:
-                para.firstLineHeadIndent = scaledSize * 2.0
-                para.lineSpacing = max(3, scaledSize * 0.38)
-                para.paragraphSpacing = max(6, scaledSize * 0.28)
-                para.lineBreakMode = .byWordWrapping
+                let em = firstLineIndentEm > 0.05 ? firstLineIndentEm : 0
+                para.firstLineHeadIndent = scaledSize * em
+                para.lineHeightMultiple = lh
+                para.paragraphSpacing = max(6, scaledSize * gapMul * 0.55)
             case .latin:
-                para.firstLineHeadIndent = 0
-                para.lineSpacing = max(3, scaledSize * 0.30)
-                para.paragraphSpacing = max(8, scaledSize * 0.36)
-                para.lineBreakMode = .byWordWrapping
+                // 拉丁文默认不强制首行缩进；用户显式 >0 时仍生效
+                para.firstLineHeadIndent = firstLineIndentEm > 0.05 ? scaledSize * firstLineIndentEm : 0
+                para.lineHeightMultiple = lh
+                para.paragraphSpacing = max(8, scaledSize * gapMul * 0.7)
             }
         }
         let textColor: UIColor = (role == .quote) ? .secondaryLabel : .label

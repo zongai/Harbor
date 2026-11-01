@@ -73,5 +73,15 @@ final class SettingsStore {
     var bookDefaultReadingMode: String = BookReadingMode.original.rawValue
     var bookTTSRate: Double = 1.0
     var bookAutoLanguageVoice: Bool = true
+    /// scroll | page（分页按视口高度吸附）
+    var bookLayoutMode: String = BookLayoutMode.scroll.rawValue
+
+    // MARK: - 阅读排版（文章 + 书籍共用）
+    /// 行高倍数（约 1.2…2.5，默认 1.55）
+    var readerLineHeight: Double = 1.55
+    /// 段间距倍数（相对字号，0.2…1.5，默认 0.55）
+    var readerParagraphSpacing: Double = 0.55
+    /// 首行缩进（em，0=关；中文常用 2）
+    var readerFirstLineIndentEm: Double = 2.0
 }
 

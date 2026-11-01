@@ -4411,7 +4411,11 @@ fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
             defaultChatProviderID: defaultChatProviderID,
             bookDefaultReadingMode: settings.bookDefaultReadingMode,
             bookTTSRate: settings.bookTTSRate,
-            bookAutoLanguageVoice: settings.bookAutoLanguageVoice
+            bookAutoLanguageVoice: settings.bookAutoLanguageVoice,
+            bookLayoutMode: settings.bookLayoutMode,
+            readerLineHeight: settings.readerLineHeight,
+            readerParagraphSpacing: settings.readerParagraphSpacing,
+            readerFirstLineIndentEm: settings.readerFirstLineIndentEm
         )
     }
 
@@ -4462,6 +4466,10 @@ fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
         settings.bookDefaultReadingMode = s.bookDefaultReadingMode
         settings.bookTTSRate = s.bookTTSRate
         settings.bookAutoLanguageVoice = s.bookAutoLanguageVoice
+        settings.bookLayoutMode = s.bookLayoutMode
+        settings.readerLineHeight = min(2.5, max(1.15, s.readerLineHeight))
+        settings.readerParagraphSpacing = min(1.8, max(0.15, s.readerParagraphSpacing))
+        settings.readerFirstLineIndentEm = min(3.0, max(0, s.readerFirstLineIndentEm))
         if let theme = ReadingTheme(rawValue: s.colorThemeRaw) {
             colorTheme = theme
         } else {

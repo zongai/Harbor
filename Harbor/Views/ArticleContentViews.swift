@@ -32,9 +32,16 @@ struct ArticleContentView: View {
         return "\(n)-\(head)-\(tail)-\(prefersChineseTypography)-\(t)"
     }
 
+    private var blockGap: CGFloat {
+        let base = prefersChineseTypography ? AppSpacing.paragraph + 2 : AppSpacing.md - 2
+        let mul = min(1.8, max(0.15, store.settings.readerParagraphSpacing))
+        // 默认 0.55 对应原间距；按比例缩放块间空隙
+        return max(4, base * CGFloat(mul / 0.55))
+    }
+
     var body: some View {
         // VStack：UITextView 在 LazyVStack 回收时易错位叠字
-        VStack(alignment: .leading, spacing: prefersChineseTypography ? AppSpacing.paragraph + 2 : AppSpacing.md - 2) {
+        VStack(alignment: .leading, spacing: blockGap) {
             ForEach(cachedBlocks.indices, id: \.self) { index in
                 blockView(cachedBlocks[index])
                     .id("blk-\(index)-\(cachedParseKey.prefix(12))")
@@ -69,6 +76,9 @@ struct ArticleContentView: View {
                 attributed: attributed,
                 fontSize: fontSize,
                 typography: style,
+                lineHeight: store.settings.readerLineHeight,
+                paragraphSpacing: store.settings.readerParagraphSpacing,
+                firstLineIndentEm: store.settings.readerFirstLineIndentEm,
                 onOpenURL: { browserURL = $0 },
                 onExplain: { startExplain($0) },
                 onHighlight: onHighlight
@@ -80,6 +90,9 @@ struct ArticleContentView: View {
                 fontSize: headingSize(level),
                 typography: style,
                 role: .heading,
+                lineHeight: store.settings.readerLineHeight,
+                paragraphSpacing: store.settings.readerParagraphSpacing,
+                firstLineIndentEm: 0,
                 onOpenURL: { browserURL = $0 },
                 onExplain: { startExplain($0) },
                 onHighlight: onHighlight
@@ -98,6 +111,9 @@ struct ArticleContentView: View {
                     fontSize: max(15, fontSize - 1),
                     typography: style,
                     role: .quote,
+                    lineHeight: store.settings.readerLineHeight,
+                    paragraphSpacing: store.settings.readerParagraphSpacing,
+                    firstLineIndentEm: 0,
                     onOpenURL: { browserURL = $0 },
                     onExplain: { startExplain($0) },
                     onHighlight: onHighlight

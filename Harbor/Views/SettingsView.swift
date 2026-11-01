@@ -707,9 +707,9 @@ struct ReadingAppearanceSettingsView: View {
 
                 NavigationLink(destination: FontSettingsView()) {
                     HStack {
-                        Text("字体大小")
+                        Text("字体与排版")
                         Spacer()
-                        Text("分组 / 列表 / 阅读")
+                        Text("字号 / 行高 / 段距")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -717,7 +717,7 @@ struct ReadingAppearanceSettingsView: View {
             } header: {
                 Text("外观")
             } footer: {
-                Text("字号随系统「更大字体」缩放。行距随正文字号自动调整。")
+                Text("字号随系统「更大字体」缩放。行高、段距与首行缩进可在「字体与排版」中细调。")
             }
         }
         .appFormChrome()
@@ -799,10 +799,21 @@ struct BookReadingModeSettingsView: View {
                     settings.bookDefaultReadingMode = v.rawValue
                     store.persistSettings()
                 }
+                Picker("翻页方式", selection: Binding(
+                    get: { BookLayoutMode(rawValue: settings.bookLayoutMode) ?? .scroll },
+                    set: {
+                        settings.bookLayoutMode = $0.rawValue
+                        store.persistSettings()
+                    }
+                )) {
+                    ForEach(BookLayoutMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
             } header: {
                 Text("书籍")
             } footer: {
-                Text("打开书籍时应用。朗读语速与双语 Voice 请到「阅读 → 朗读」。缓存清理在「同步与数据 → 存储」或底部「危险操作」。")
+                Text("打开书籍时应用。阅读中可在「排版」随时改翻页与行高。朗读在「阅读 → 朗读」。")
             }
         }
         .appFormChrome()
@@ -838,12 +849,20 @@ struct FontSettingsView: View {
                 fontRow("AI 摘要", value: $settings.aiSummaryFontSize, range: 14...28)
             } header: {
                 Text("阅读")
+            }
+
+            Section {
+                metricRow("行高", value: $settings.readerLineHeight, range: 1.15...2.5, step: 0.05, format: "%.2f")
+                metricRow("段间距", value: $settings.readerParagraphSpacing, range: 0.15...1.8, step: 0.05, format: "%.2f")
+                metricRow("首行缩进 (em)", value: $settings.readerFirstLineIndentEm, range: 0...3.0, step: 0.5, format: "%.1f")
+            } header: {
+                Text("段落排版")
             } footer: {
-                Text("调整后立即生效，并自动保存。跟随系统「更大字体」时会在基准上再缩放。")
+                Text("行高 / 段距 / 首行缩进作用于文章与书籍正文。首行缩进为 0 时关闭。跟随系统「更大字体」时字号会在基准上再缩放。")
             }
         }
         .appFormChrome()
-        .navigationTitle("字体大小")
+        .navigationTitle("字体与排版")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { store.persistSettings() }
     }
@@ -856,6 +875,18 @@ struct FontSettingsView: View {
                 Text("\(Int(value.wrappedValue))").foregroundStyle(.secondary).monospacedDigit()
             }
             Slider(value: value, in: range, step: 1)
+                .onChange(of: value.wrappedValue) { _, _ in store.persistSettings() }
+        }
+    }
+
+    private func metricRow(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, format: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(String(format: format, value.wrappedValue)).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Slider(value: value, in: range, step: step)
                 .onChange(of: value.wrappedValue) { _, _ in store.persistSettings() }
         }
     }

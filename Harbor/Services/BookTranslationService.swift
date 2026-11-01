@@ -16,6 +16,21 @@ enum BookReadingMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 书籍排版流：连续滚动 / 按视口高度分页吸附
+enum BookLayoutMode: String, CaseIterable, Identifiable, Sendable {
+    case scroll
+    case page
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .scroll: return "连续滚动"
+        case .page: return "分页"
+        }
+    }
+}
+
 struct BookChapterTranslation: Codable, Sendable {
     var bookID: UUID
     var chapterID: UUID

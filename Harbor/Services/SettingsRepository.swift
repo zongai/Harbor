@@ -59,6 +59,10 @@ struct PersistedAppSettings: Codable {
     var bookDefaultReadingMode: String = "original"
     var bookTTSRate: Double = 1.0
     var bookAutoLanguageVoice: Bool = true
+    var bookLayoutMode: String = "scroll"
+    var readerLineHeight: Double = 1.55
+    var readerParagraphSpacing: Double = 0.55
+    var readerFirstLineIndentEm: Double = 2.0
 }
 
 
@@ -106,6 +110,10 @@ enum SettingsRepository {
         d.set(s.bookDefaultReadingMode, forKey: "bookDefaultReadingMode")
         d.set(s.bookTTSRate, forKey: "bookTTSRate")
         d.set(s.bookAutoLanguageVoice, forKey: "bookAutoLanguageVoice")
+        d.set(s.bookLayoutMode, forKey: "bookLayoutMode")
+        d.set(s.readerLineHeight, forKey: "readerLineHeight")
+        d.set(s.readerParagraphSpacing, forKey: "readerParagraphSpacing")
+        d.set(s.readerFirstLineIndentEm, forKey: "readerFirstLineIndentEm")
         if !s.colorThemeRaw.isEmpty { d.set(s.colorThemeRaw, forKey: "colorTheme") }
         if !s.appearanceModeRaw.isEmpty { d.set(s.appearanceModeRaw, forKey: "appearanceMode") }
         if !s.appFontFamilyRaw.isEmpty { d.set(s.appFontFamilyRaw, forKey: "appFontFamily") }
@@ -231,6 +239,16 @@ enum SettingsRepository {
         }
         if d.object(forKey: "bookAutoLanguageVoice") != nil {
             s.bookAutoLanguageVoice = d.bool(forKey: "bookAutoLanguageVoice")
+        }
+        s.bookLayoutMode = d.string(forKey: "bookLayoutMode") ?? s.bookLayoutMode
+        if d.object(forKey: "readerLineHeight") != nil {
+            s.readerLineHeight = min(2.5, max(1.15, d.double(forKey: "readerLineHeight")))
+        }
+        if d.object(forKey: "readerParagraphSpacing") != nil {
+            s.readerParagraphSpacing = min(1.8, max(0.15, d.double(forKey: "readerParagraphSpacing")))
+        }
+        if d.object(forKey: "readerFirstLineIndentEm") != nil {
+            s.readerFirstLineIndentEm = min(3.0, max(0, d.double(forKey: "readerFirstLineIndentEm")))
         }
         s.colorThemeRaw = d.string(forKey: "colorTheme") ?? ""
         s.appearanceModeRaw = d.string(forKey: "appearanceMode") ?? ""
