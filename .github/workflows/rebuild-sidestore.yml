@@ -1,0 +1,21 @@
+name: Rebuild SideStore Source
+
+on:
+  push:
+    paths:
+      - "sidestore-apps.json"
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger SideStore Worker rebuild
+        env:
+          REBUILD_TOKEN: ${{ secrets.SIDESTORE_REBUILD_TOKEN }}
+        run: |
+          curl --fail-with-body \
+            -X POST \
+            -H "Authorization: Bearer ${REBUILD_TOKEN}" \
+            -H "Content-Type: application/json" \
+            https://sidestore.zongai.mom/admin/rebuild
