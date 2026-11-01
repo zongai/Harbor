@@ -43,7 +43,7 @@ struct OPDSBrowserView: View {
     private static func normalizeTitle(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-            .replacingOccurrences(of: "\s+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     var body: some View {
