@@ -1,7 +1,7 @@
 {
   "apps": [
     {
-      "file": "Harbor-1.3-127-build214-main.ipa",
+      "file": "Harbor-1.3-128-build216-main.ipa",
       "bundleIdentifier": "com.example.Harbor",
       "name": "Harbor",
       "developerName": "zongai",
@@ -10,11 +10,11 @@
       "iconURL": "https://raw.githubusercontent.com/zongai/zoo/refs/heads/main/Harbor.png",
       "banner": "https://raw.githubusercontent.com/zongai/zoo/refs/heads/main/banner.png",
       "tintColor": "3478F6",
-      "version": "1.3.127",
-      "versionDate": "2026-10-28",
-      "versionDescription": "v1.3-127 (build 214)：OPDS 双列瀑布流海报封面；本地书架 2:3 海报格子；封面支持 Basic 认证加载。",
+      "version": "1.3.128",
+      "versionDate": "2026-11-01",
+      "versionDescription": "v1.3-128 (build 216)：OPDS 标题规范化修复；EPUB 分页模式与排版（行高/间距/缩进）；清理旧 workflow 运行。",
       "minOSVersion": "17.0",
-      "size": 5458848
+      "size": 5539373
     }
   ]
 }
