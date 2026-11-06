@@ -591,7 +591,7 @@ struct SettingsImportExportView: View {
             } header: {
                 Text("导入与导出")
             } footer: {
-                Text("导出包含字体/主题/翻译/AI/TTS、书籍阅读偏好、本地书架元数据（进度与章节索引）、TTS 朗读断点与 OPDS 书库列表；默认不含 API Key 与 OPDS 密码。订阅 OPML 在「订阅」页。本地 EPUB 文件、章节译文与语音缓存体积较大，不写入本 JSON；换机需重新导入 EPUB 后可合并进度。勾选「包含 API Key」时一并导出密钥与 OPDS 密码，请妥善保管。")
+                Text("导出包含全部可配置项：字体/主题/翻译/AI/TTS、阅读排版、iCloud 开关、订阅源列表与源级开关（全文/评论/自动翻译等）、分组与折叠状态、书籍阅读偏好、书架元数据与 TTS 断点、OPDS 书库。默认不含 API Key 与 OPDS 密码。本地 EPUB、译文/语音缓存、文章正文体积大不导出。勾选「包含 API Key」时一并导出密钥与 OPDS 密码。")
             }
         }
         .appFormChrome()
@@ -628,7 +628,7 @@ struct SettingsImportExportView: View {
                 pendingImportData = nil
             }
         } message: {
-            Text("将覆盖当前字号、主题、翻译与 AI 配置等。若文件含 API Key 也会写入。此操作不可撤销。")
+            Text("将覆盖当前偏好设置，并合并/恢复订阅源与源级开关、分组、书架进度与 OPDS。若文件含 API Key 也会写入。此操作不可撤销。")
         }
     }
 }

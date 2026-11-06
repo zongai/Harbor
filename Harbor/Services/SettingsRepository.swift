@@ -63,6 +63,7 @@ struct PersistedAppSettings: Codable {
     var readerLineHeight: Double = 1.55
     var readerParagraphSpacing: Double = 0.55
     var readerFirstLineIndentEm: Double = 2.0
+    var iCloudSyncEnabled: Bool = true
 }
 
 
@@ -114,6 +115,7 @@ enum SettingsRepository {
         d.set(s.readerLineHeight, forKey: "readerLineHeight")
         d.set(s.readerParagraphSpacing, forKey: "readerParagraphSpacing")
         d.set(s.readerFirstLineIndentEm, forKey: "readerFirstLineIndentEm")
+        d.set(s.iCloudSyncEnabled, forKey: "iCloudSyncEnabled")
         if !s.colorThemeRaw.isEmpty { d.set(s.colorThemeRaw, forKey: "colorTheme") }
         if !s.appearanceModeRaw.isEmpty { d.set(s.appearanceModeRaw, forKey: "appearanceMode") }
         if !s.appFontFamilyRaw.isEmpty { d.set(s.appFontFamilyRaw, forKey: "appFontFamily") }
@@ -249,6 +251,9 @@ enum SettingsRepository {
         }
         if d.object(forKey: "readerFirstLineIndentEm") != nil {
             s.readerFirstLineIndentEm = min(3.0, max(0, d.double(forKey: "readerFirstLineIndentEm")))
+        }
+        if d.object(forKey: "iCloudSyncEnabled") != nil {
+            s.iCloudSyncEnabled = d.bool(forKey: "iCloudSyncEnabled")
         }
         s.colorThemeRaw = d.string(forKey: "colorTheme") ?? ""
         s.appearanceModeRaw = d.string(forKey: "appearanceMode") ?? ""

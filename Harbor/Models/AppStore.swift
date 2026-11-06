@@ -891,6 +891,9 @@ class AppStore: AIService.Runtime {
         var bookTTSPositions: [BookTTSPositionStore.Position]?
         var groups: [GroupSettingsSnapshot]?
         var feeds: [FeedSettingsSnapshot]?
+        /// 折叠的分组名（跨设备用名而非 UUID）
+        var collapsedGroupNames: [String]?
+        var isUngroupedCollapsed: Bool?
     }
 
     func exportSettingsJSON(includeSecrets: Bool = false) throws -> Data {
@@ -917,7 +920,7 @@ class AppStore: AIService.Runtime {
         }
         let snap = makePersistedSettings()
         let payload = SettingsExportPayload(
-            version: 7,
+            version: 8,
             settings: snap,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
@@ -984,7 +987,12 @@ class AppStore: AIService.Runtime {
             books: BookLibrary().exportIndex(),
             bookTTSPositions: BookTTSPositionStore.exportAll(),
             groups: groupSnaps,
-            feeds: feedSnaps
+            feeds: feedSnaps,
+            collapsedGroupNames: {
+                let nameByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0.name) })
+                return collapsedGroupIDs.compactMap { nameByID[$0] }
+            }(),
+            isUngroupedCollapsed: isUngroupedCollapsed
         )
         return try JSONEncoder().encode(payload)
     }
@@ -1028,6 +1036,17 @@ class AppStore: AIService.Runtime {
         }
         if let positions = payload.bookTTSPositions, !positions.isEmpty {
             BookTTSPositionStore.importAll(positions)
+        }
+        if let names = payload.collapsedGroupNames {
+            let idByName = Dictionary(uniqueKeysWithValues: groups.map { ($0.name, $0.id) })
+            collapsedGroupIDs = Set(names.compactMap { idByName[$0] })
+            if let u = payload.isUngroupedCollapsed {
+                isUngroupedCollapsed = u
+            }
+            FeedRepository.saveCollapsedState(groupIDs: collapsedGroupIDs, isUngroupedCollapsed: isUngroupedCollapsed)
+        } else if let u = payload.isUngroupedCollapsed {
+            isUngroupedCollapsed = u
+            FeedRepository.saveCollapsedState(groupIDs: collapsedGroupIDs, isUngroupedCollapsed: isUngroupedCollapsed)
         }
         saveToStorage()
         NotificationCenter.default.post(name: .harborBookDataDidImport, object: nil)
@@ -1172,20 +1191,37 @@ class AppStore: AIService.Runtime {
         for snap in feedSnaps {
             let key = Self.canonicalLink(snap.url)
             guard !key.isEmpty else { continue }
-            guard let i = feeds.firstIndex(where: { Self.canonicalLink($0.url) == key }) else { continue }
-            if let v = snap.fetchFullContentEnabled { feeds[i].fetchFullContentEnabled = v }
-            if let v = snap.fetchCommentsEnabled { feeds[i].fetchCommentsEnabled = v }
-            if let v = snap.autoTranslateEnabled { feeds[i].autoTranslateEnabled = v }
-            if let v = snap.useFullContentURLPrefix { feeds[i].useFullContentURLPrefix = v }
-            if let v = snap.summaryPromptPresetID, !v.isEmpty { feeds[i].summaryPromptPresetID = v }
-            if let v = snap.sortOrder { feeds[i].sortOrder = v }
-            if let title = snap.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-                feeds[i].title = title
+            let gName = snap.groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let groupID = (gName?.isEmpty == false) ? groupIDByName[gName!] : nil
+            if let i = feeds.firstIndex(where: { Self.canonicalLink($0.url) == key }) {
+                if let v = snap.fetchFullContentEnabled { feeds[i].fetchFullContentEnabled = v }
+                if let v = snap.fetchCommentsEnabled { feeds[i].fetchCommentsEnabled = v }
+                if let v = snap.autoTranslateEnabled { feeds[i].autoTranslateEnabled = v }
+                if let v = snap.useFullContentURLPrefix { feeds[i].useFullContentURLPrefix = v }
+                if let v = snap.summaryPromptPresetID, !v.isEmpty { feeds[i].summaryPromptPresetID = v }
+                if let v = snap.sortOrder { feeds[i].sortOrder = v }
+                if let title = snap.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                    feeds[i].title = title
+                }
+                if groupID != nil { feeds[i].groupID = groupID }
+                touched = true
+            } else {
+                // 备份中的源本地不存在时一并恢复订阅（无文章，刷新后拉取）
+                let title = snap.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let feed = RSSFeed(
+                    title: (title?.isEmpty == false) ? title! : snap.url,
+                    url: snap.url,
+                    groupID: groupID,
+                    fetchFullContentEnabled: snap.fetchFullContentEnabled ?? true,
+                    fetchCommentsEnabled: snap.fetchCommentsEnabled ?? false,
+                    autoTranslateEnabled: snap.autoTranslateEnabled ?? true,
+                    useFullContentURLPrefix: snap.useFullContentURLPrefix ?? false,
+                    summaryPromptPresetID: snap.summaryPromptPresetID ?? SummaryPromptPreset.globalID,
+                    sortOrder: snap.sortOrder ?? feeds.count
+                )
+                feeds.append(feed)
+                touched = true
             }
-            if let gName = snap.groupName?.trimmingCharacters(in: .whitespacesAndNewlines), !gName.isEmpty {
-                feeds[i].groupID = groupIDByName[gName]
-            }
-            touched = true
         }
         if touched {
             articleFlagsEpoch &+= 1
@@ -4428,7 +4464,8 @@ fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
             bookLayoutMode: settings.bookLayoutMode,
             readerLineHeight: settings.readerLineHeight,
             readerParagraphSpacing: settings.readerParagraphSpacing,
-            readerFirstLineIndentEm: settings.readerFirstLineIndentEm
+            readerFirstLineIndentEm: settings.readerFirstLineIndentEm,
+            iCloudSyncEnabled: ICloudSyncService.isEnabled
         )
     }
 
@@ -4483,6 +4520,7 @@ fullContentURLPrefixEnabled: fullContentURLPrefixEnabled,
         settings.readerLineHeight = min(2.5, max(1.15, s.readerLineHeight))
         settings.readerParagraphSpacing = min(1.8, max(0.15, s.readerParagraphSpacing))
         settings.readerFirstLineIndentEm = min(3.0, max(0, s.readerFirstLineIndentEm))
+        ICloudSyncService.isEnabled = s.iCloudSyncEnabled
         if let theme = ReadingTheme(rawValue: s.colorThemeRaw) {
             colorTheme = theme
         } else {
