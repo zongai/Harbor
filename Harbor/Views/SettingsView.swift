@@ -591,7 +591,7 @@ struct SettingsImportExportView: View {
             } header: {
                 Text("导入与导出")
             } footer: {
-                Text("导出包含字体/主题/翻译/AI/TTS、书籍阅读偏好（默认模式/语速/双语 Voice）与 OPDS 书库列表；默认不含 API Key 与 OPDS 密码。订阅 OPML 在「订阅」页；本地 EPUB 与译文缓存不导出。勾选「包含 API Key」时一并导出密钥与 OPDS 密码，请妥善保管。")
+                Text("导出包含字体/主题/翻译/AI/TTS、书籍阅读偏好、本地书架元数据（进度与章节索引）、TTS 朗读断点与 OPDS 书库列表；默认不含 API Key 与 OPDS 密码。订阅 OPML 在「订阅」页。本地 EPUB 文件、章节译文与语音缓存体积较大，不写入本 JSON；换机需重新导入 EPUB 后可合并进度。勾选「包含 API Key」时一并导出密钥与 OPDS 密码，请妥善保管。")
             }
         }
         .appFormChrome()

@@ -32,6 +32,10 @@ struct ContentView: View {
         .environment(store)
         .environment(bookLibrary)
         .environment(opdsCatalogs)
+        .onReceive(NotificationCenter.default.publisher(for: .harborBookDataDidImport)) { _ in
+            bookLibrary.load()
+            opdsCatalogs.load()
+        }
         .environment(\.theme, tokens)
         .environment(\.readingTheme, readingTheme.colors(for: scheme))
         .preferredColorScheme(store.appearanceMode.preferredColorScheme)

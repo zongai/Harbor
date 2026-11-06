@@ -734,6 +734,25 @@ enum BookTTSPositionStore {
     static func clear(bookID: UUID) {
         try? FileManager.default.removeItem(at: fileURL(bookID: bookID))
     }
+
+    static func exportAll() -> [Position] {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return [] }
+        return files.compactMap { url -> Position? in
+            guard url.pathExtension.lowercased() == "json",
+                  let data = try? Data(contentsOf: url),
+                  let p = try? JSONDecoder().decode(Position.self, from: data) else { return nil }
+            return p
+        }
+    }
+
+    static func importAll(_ positions: [Position]) {
+        for p in positions {
+            if let data = try? JSONEncoder().encode(p) {
+                try? data.write(to: fileURL(bookID: p.bookID), options: [.atomic])
+            }
+        }
+    }
 }
 
 // MARK: - TTS in-flight dedupe（同 cacheKey 只合成一次）

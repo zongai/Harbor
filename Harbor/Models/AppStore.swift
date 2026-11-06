@@ -885,6 +885,10 @@ class AppStore: AIService.Runtime {
         var bookAutoLanguageVoice: Bool?
         /// OPDS 书库列表（设置类；EPUB 文件本身不导出）
         var opdsCatalogs: [OPDSCatalogExportItem]?
+        /// 本地书架元数据（阅读进度、章节清单等；不含 EPUB 二进制）
+        var books: [Book]?
+        /// 书籍 TTS 朗读断点
+        var bookTTSPositions: [BookTTSPositionStore.Position]?
         var groups: [GroupSettingsSnapshot]?
         var feeds: [FeedSettingsSnapshot]?
     }
@@ -913,7 +917,7 @@ class AppStore: AIService.Runtime {
         }
         let snap = makePersistedSettings()
         let payload = SettingsExportPayload(
-            version: 6,
+            version: 7,
             settings: snap,
             fontSize: fontSize,
             listTitleFontSize: listTitleFontSize,
@@ -977,6 +981,8 @@ class AppStore: AIService.Runtime {
             bookTTSRate: settings.bookTTSRate,
             bookAutoLanguageVoice: settings.bookAutoLanguageVoice,
             opdsCatalogs: OPDSCatalogStore().exportItems(includePasswords: includeSecrets),
+            books: BookLibrary().exportIndex(),
+            bookTTSPositions: BookTTSPositionStore.exportAll(),
             groups: groupSnaps,
             feeds: feedSnaps
         )
@@ -1013,11 +1019,18 @@ class AppStore: AIService.Runtime {
             groups: payload.groups ?? [],
             feeds: payload.feeds ?? []
         )
-        // 书籍：阅读偏好已在 settings 快照 / legacy 中；OPDS 书库列表单独合并
+        // 书籍：阅读偏好已在 settings 快照 / legacy 中；书架索引 / OPDS / TTS 断点单独合并
         if let opds = payload.opdsCatalogs {
             OPDSCatalogStore().replaceAll(from: opds)
         }
+        if let books = payload.books, !books.isEmpty {
+            _ = BookLibrary().importIndex(books)
+        }
+        if let positions = payload.bookTTSPositions, !positions.isEmpty {
+            BookTTSPositionStore.importAll(positions)
+        }
         saveToStorage()
+        NotificationCenter.default.post(name: .harborBookDataDidImport, object: nil)
     }
 
     /// v5 及更早扁平备份
