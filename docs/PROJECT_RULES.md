@@ -2,7 +2,7 @@
 
 本文件是 Grok 与协作者在本仓库上的**默认行为约定**。有冲突时以本文件与当前分支代码为准；无需用户每次提醒。
 
-更新日期：2026-11-02
+更新日期：2026-11-06
 
 ---
 
@@ -23,23 +23,32 @@
 - CI **不**回写 docs / README / CHANGELOG。
 - 触发构建：打并推送 `v*` 标签（见 `.github/workflows/build.yml`）；或 `workflow_dispatch`。
 - 触发后：**轮询 GitHub Actions 至完成**，默认向用户报告成功/失败与 Release / IPA 链接。
+- **构建成功后默认必须更新 SideStore**（见 §3）——用户无需再提醒。
 - CI 注入：`AppVersion.githubBuildNumber` 由 CI `sed` 写入 run_number；设置页展示 `v1.3-{build}-buildN`。
 - IPA 命名：`Harbor-{MARKETING}-{BUILD}-build{N}[-main].ipa`。
 
 ---
 
-## 3. SideStore 源（自动重建）
+## 3. SideStore 源（构建成功后默认更新）
+
+**硬性默认：CI 正式 IPA 构建 success → 立刻更新 `sidestore-apps.json` 并 push → 自动触发重建。用户不必再说「更新 sidestore」。**
 
 - 仓库根目录：`sidestore-apps.json`（Harbor 单应用条目）。
 - 工作流：`.github/workflows/rebuild-sidestore.yml`
   - **触发条件**：任意分支上 **push 且变更路径包含 `sidestore-apps.json`**。
   - **动作**：用 secret `SIDESTORE_REBUILD_TOKEN` 对 `https://sidestore.zongai.mom/admin/rebuild` 发 `POST`。
-- **默认流程（成功出包后）**：
-  1. CI / Release 产出 IPA 成功；
-  2. 更新 `sidestore-apps.json`：`file` / `version` / `versionDate` / `versionDescription` / `size` 等与最新 IPA 一致；
-  3. commit + push 到当前分支 → **自动触发** `Rebuild SideStore Source`；
-  4. 确认 Actions 中该 workflow 成功（若失败再查 token / 服务端）。
-- 固定字段约定（勿随意改坏源）：
+- **默认流程（每次成功出包后，不可省略）**：
+  1. 轮询确认 Build Unsigned IPA **success**，记下 `MARKETING` / `BUILD` / `run_number` / IPA 文件名与 `size`；
+  2. 改写 `sidestore-apps.json` 与最新 IPA 一致（见下）；
+  3. `git commit` + `git push` 当前开发分支 → 自动跑 `Rebuild SideStore Source`；
+  4. 轮询该 workflow 至完成；失败则查 token / 服务端并重试，不要只报「构建成功」却漏源。
+- 字段映射：
+  - `file` = Release 资源名全文（含 `-main` 等后缀）
+  - `version` = `{MARKETING}.{BUILD}`（如 `1.3.129`）
+  - `versionDate` = 发布日 `YYYY-MM-DD`
+  - `versionDescription` = 本批 CHANGELOG 用户可见摘要（一两句）
+  - `size` = IPA 字节数（Release asset `size`）
+- 固定字段（勿随意改坏源）：
   - `bundleIdentifier`: `com.example.Harbor`
   - `name`: `Harbor`
   - `developerName`: `zongai`
@@ -47,8 +56,7 @@
   - `banner`: `https://raw.githubusercontent.com/zongai/zoo/refs/heads/main/banner.png`
   - `tintColor`: `3478F6`
   - `minOSVersion`: `17.0`（或与工程部署目标一致时再改）
-- `file` 与 Release 资源名一致（含 `-main` 后缀时需写全）。
-- `version` 建议 `1.3.{BUILD}` 形式（如 `1.3.128`）；`versionDescription` 简要写本批用户可见变更。
+- 仅当构建 **失败** 时不要改 sidestore。
 
 ---
 

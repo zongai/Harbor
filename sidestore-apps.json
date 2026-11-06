@@ -1,7 +1,7 @@
 {
   "apps": [
     {
-      "file": "Harbor-1.3-128-build216-main.ipa",
+      "file": "Harbor-1.3-129-build217-main.ipa",
       "bundleIdentifier": "com.example.Harbor",
       "name": "Harbor",
       "developerName": "zongai",
@@ -10,11 +10,11 @@
       "iconURL": "https://raw.githubusercontent.com/zongai/zoo/refs/heads/main/Harbor.png",
       "banner": "https://raw.githubusercontent.com/zongai/zoo/refs/heads/main/banner.png",
       "tintColor": "3478F6",
-      "version": "1.3.128",
-      "versionDate": "2026-11-01",
-      "versionDescription": "v1.3-128 (build 216)：EPUB 分页与细排版（行高/段距/缩进）、沉浸工具栏与目录搜索；OPDS 标题规范化；SideStore 源随 sidestore-apps.json 推送自动重建。",
+      "version": "1.3.129",
+      "versionDate": "2026-11-06",
+      "versionDescription": "v1.3-129 (build 217)：设置备份 v8——订阅源缺失自动恢复；源级开关/分组折叠/iCloud；书架元数据与 TTS 断点纳入备份。",
       "minOSVersion": "17.0",
-      "size": 5539373
+      "size": 5548896
     }
   ]
 }
